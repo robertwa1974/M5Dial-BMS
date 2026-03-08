@@ -5,6 +5,7 @@
 Original TeslaBMS firmware by **Collin Kidder**:
 - https://github.com/collin80/TeslaBMS
 - Licence: MIT
+
 SimpBMS firmware by **Tom-evnut**
 -https://github.com/Tom-evnut/TeslaBMSV2
 
