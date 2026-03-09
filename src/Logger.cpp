@@ -53,24 +53,8 @@ void Logger::log(LogLevel level, const char *format, va_list args) {
 }
 
 void Logger::logMessage(const char *format, va_list args) {
-    for (; *format != 0; ++format) {
-        if (*format == '%') {
-            ++format;
-            if (*format == '\0') break;
-            if (*format == '%')  { SERIALCONSOLE.print(*format); continue; }
-            if (*format == 's')  { register char *s = (char *)va_arg(args, int); SERIALCONSOLE.print(s); continue; }
-            if (*format == 'd' || *format == 'i') { SERIALCONSOLE.print(va_arg(args, int),    DEC); continue; }
-            if (*format == 'f')  { SERIALCONSOLE.print(va_arg(args, double),   3);   continue; }
-            if (*format == 'x')  { SERIALCONSOLE.print(va_arg(args, int),      HEX); continue; }
-            if (*format == 'X')  { SERIALCONSOLE.print("0x"); SERIALCONSOLE.print(va_arg(args, int), HEX); continue; }
-            if (*format == 'b')  { SERIALCONSOLE.print(va_arg(args, int),      BIN); continue; }
-            if (*format == 'B')  { SERIALCONSOLE.print("0b"); SERIALCONSOLE.print(va_arg(args, int), BIN); continue; }
-            if (*format == 'l')  { SERIALCONSOLE.print(va_arg(args, long),     DEC); continue; }
-            if (*format == 'c')  { SERIALCONSOLE.print(va_arg(args, int));           continue; }
-            if (*format == 't')  { SERIALCONSOLE.print(va_arg(args, int) == 1 ? "T" : "F");           continue; }
-            if (*format == 'T')  { SERIALCONSOLE.print(va_arg(args, int) == 1 ? "TRUE" : "FALSE");    continue; }
-        }
-        SERIALCONSOLE.print(*format);
-    }
-    SERIALCONSOLE.println();
+    // Use vsnprintf so all standard qualifiers work: %.2f, %02X, %d, %s etc.
+    char buf[256];
+    vsnprintf(buf, sizeof(buf), format, args);
+    SERIALCONSOLE.println(buf);
 }
