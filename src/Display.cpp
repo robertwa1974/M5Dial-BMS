@@ -594,7 +594,7 @@ void Display::updateSettingsPage()
 {
     char buf[320];
     snprintf(buf, sizeof(buf),
-        "TeslaBMS v6\n"
+        "TeslaBMS v7\n"
         "CMU: %s\n"
         "Cells: %d  Ser: %d  Par: %d\n"
         "OV:%.2fV  UV:%.2fV\n"
@@ -603,7 +603,11 @@ void Display::updateSettingsPage()
         "ChgHB: 0x%03X  %s\n"
         "AutoBal: %s\n"
         "Mods: %d / %d max",
-        settings.cmuType == CMU_TESLA ? "Tesla UART" : "BMW i3 CAN",
+        (settings.cmuType == CMU_TESLA)       ? "Tesla UART"  :
+        (settings.cmuType == CMU_BMW_I3)      ? "BMW i3 std"  :
+        (settings.cmuType == CMU_BMW_I3_BUS)  ? "BMW i3 bus"  :
+        (settings.cmuType == CMU_BMW_MINIE)   ? "BMW Mini-E"  :
+                                                "BMW PHEV",
         settings.numCells, settings.numSeries, settings.numParallel,
         settings.OverVSetpoint, settings.UnderVSetpoint,
         settings.balanceVoltage, settings.balanceHyst,

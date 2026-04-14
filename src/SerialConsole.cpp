@@ -6,12 +6,14 @@
 #include "SerialConsole.h"
 #include "Logger.h"
 #include "BMSModuleManager.h"
+#include "CANManager.h"
 #include <EEPROM.h>
 
 template<class T> inline Print &operator<<(Print &obj, T arg) { obj.print(arg); return obj; }
 
 extern EEPROMSettings   settings;
 extern BMSModuleManager bms;
+extern CANManager       can;
 
 bool     printPrettyDisplay;
 uint32_t prettyCounter;
@@ -42,7 +44,7 @@ void SerialConsole::loop() {
 // printMenu - shows all commands WITH their current values
 // ---------------------------------------------------------------------------
 void SerialConsole::printMenu() {
-    Logger::console("\n========== TeslaBMS M5Dial v5 - MENU ==========");
+    Logger::console("\n========== TeslaBMS M5Dial v7 - MENU ==========");
     Logger::console("Line ending required (LF, CR, or CRLF)\n");
 
     Logger::console("--- Pack Actions ---");
@@ -101,13 +103,18 @@ void SerialConsole::printMenu() {
                     settings.batteryID);
     Logger::console("  LOGLEVEL=N       0=debug 1=info 2=warn 3=error 4=off [%d]",
                     settings.logLevel);
-    Logger::console("\n--- v6: CMU Type & CAN Inhibit ---");
-    Logger::console("  CMUTYPE=0/1      0=Tesla UART, 1=BMW i3 CAN [%d] (reboot)",
+    Logger::console("\n--- v7: CMU Type & CAN Inhibit ---");
+    Logger::console("  CMUTYPE=0-4   0=Tesla UART, 1=i3std, 2=i3bus, 3=MiniE, 4=PHEV [%d] (reboot)",
                     settings.cmuType);
     Logger::console("  CANINHIBIT=0/1   CAN-based balance inhibit [%s]",
                     settings.canInhibitEnabled ? "ON" : "OFF");
     Logger::console("  CHGID=0xNNN      Charger heartbeat CAN ID [0x%03X]",
                     settings.chargerHeartbeatID);
+    Logger::console("\n--- i3 standard CSC enumeration (cmuType=1 only) ---");
+    Logger::console("  I3FIND     Send find-unassigned frame (0x0A0)");
+    Logger::console("  I3ASSIGN=N Assign ID N to last-seen unassigned CSC");
+    Logger::console("  I3RESET    Reset all CSC IDs 0-14 (0x0A0 broadcast)");
+    Logger::console("  I3BALRST   Send balance reset (0x0B0)");
     Logger::console("================================================\n");
 }
 
@@ -201,8 +208,35 @@ void SerialConsole::handleConfigCmd() {
     String cmdString;
     int i = 0;
     while (cmdBuffer[i] != '=' && i < ptrBuffer) cmdString.concat(String(cmdBuffer[i++]));
-    i++; // skip '='
-    if (i >= ptrBuffer) { Logger::console("Format: KEY=value  (e.g. VOLTLIMHI=4.20)"); return; }
+    bool hasEquals = (cmdBuffer[i] == '=');
+    i++; // skip '=' (or advance past end)
+
+    // Handle commands with no '=' value
+    if (!hasEquals) {
+        cmdString.toUpperCase();
+        if (cmdString == "I3FIND") {
+            if (settings.cmuType == CMU_BMW_I3 && can.isRunning()) {
+                can.sendI3FindUnassigned();
+                Logger::console("i3 find-unassigned sent. Waiting for 0x4A0 response...");
+            } else Logger::console("Not in BMW i3 std mode or CAN not running");
+            return;
+        }
+        if (cmdString == "I3RESET") {
+            if (settings.cmuType == CMU_BMW_I3 && can.isRunning()) {
+                can.sendI3ResetAllIDs(14);
+                Logger::console("i3 reset all IDs 0-14 sent");
+            } else Logger::console("Not in BMW i3 std mode or CAN not running");
+            return;
+        }
+        if (cmdString == "I3BALRST") {
+            if (settings.cmuType == CMU_BMW_I3 && can.isRunning()) {
+                can.sendI3BalanceReset();
+                Logger::console("i3 balance reset sent");
+            } else Logger::console("Not in BMW i3 std mode or CAN not running");
+            return;
+        }
+        Logger::console("Format: KEY=value  (e.g. VOLTLIMHI=4.20)"); return;
+    }
 
     newValue = strtol((char *)(cmdBuffer + i), NULL, 0);
     newFloat = strtof((char *)(cmdBuffer + i), NULL);
@@ -346,14 +380,30 @@ void SerialConsole::handleConfigCmd() {
             Logger::console("Log level: %s", names[newValue]);
         } else Logger::console("Invalid (0-4)");
     }
-    // --- v6: CMU type ---
+    // --- v7: CMU type (0-4) ---
     else if (cmdString == "CMUTYPE") {
-        if (newValue == 0 || newValue == 1) {
+        if (newValue >= 0 && newValue <= 4) {
             settings.cmuType = (uint8_t)newValue;
             needEEPROMWrite = true;
-            Logger::console("CMU type: %s  (reboot required)",
-                            newValue == 0 ? "Tesla UART" : "BMW i3 CAN");
-        } else Logger::console("Invalid (0=Tesla, 1=BMW i3)");
+            static const char* kNames[] = {
+                "Tesla UART", "BMW i3 std", "BMW i3 bus", "BMW Mini-E", "BMW PHEV (reserved)"
+            };
+            Logger::console("CMU type: %s  (reboot required)", kNames[newValue]);
+        } else Logger::console("Invalid CMU type (0=Tesla, 1=i3std, 2=i3bus, 3=MiniE, 4=PHEV)");
+    }
+    // --- i3 standard CSC enumeration (with value argument) ---
+    else if (cmdString == "I3ASSIGN") {
+        if (settings.cmuType == CMU_BMW_I3 && can.isRunning()) {
+            if (!can.hasUnassignedCSC()) {
+                Logger::console("No unassigned CSC seen yet. Run I3FIND first.");
+            } else if (newValue < 1 || newValue > 14) {
+                Logger::console("Invalid ID (1-14)");
+            } else {
+                can.sendI3AssignID((uint8_t)newValue, can.getUnassignedDMC());
+                can.clearUnassignedFlag();
+                Logger::console("Assigned ID %d to last-seen unassigned CSC", newValue);
+            }
+        } else Logger::console("Not in BMW i3 std mode or CAN not running");
     }
     // --- v6: CAN-based balance inhibit ---
     else if (cmdString == "CANINHIBIT") {

@@ -110,8 +110,11 @@ extern HardwareSerial SERIALBMS;
 // CMU Slave Type
 // ---------------------------------------------------------------------------
 enum CmuType : uint8_t {
-    CMU_TESLA  = 0,   // BQ76PL536A UART daisy-chain (default)
-    CMU_BMW_I3 = 1,   // BMW i3 CSC modules via CAN
+    CMU_TESLA        = 0,   // Tesla BQ76PL536A UART daisy-chain
+    CMU_BMW_I3       = 1,   // BMW i3 CSC standard (0x3D1-0x3D8 cells, 0x3B1-0x3B8 temps)
+    CMU_BMW_I3_BUS   = 2,   // BMW i3 bus-pack variant (0x080 TX keepalive, 0x100-0x17F RX)
+    CMU_BMW_MINIE    = 3,   // BMW Mini-E CSC (0x080 TX, 0x0A0-0x17F RX)
+    CMU_BMW_PHEV     = 4,   // BMW PHEV SP06/SP41 — reserved, not yet implemented
 };
 
 // ---------------------------------------------------------------------------
@@ -123,22 +126,69 @@ enum CmuType : uint8_t {
 #define DEFAULT_CHARGER_HB_ID    0x305   // CAB300 current sensor / Victron heartbeat
 #define DEFAULT_CAN_INHIBIT      0       // 0=GPIO only, 1=GPIO+CAN
 
-// BMW i3 CSC CAN IDs
-// Each CSC broadcasts three frames per cycle; frame set per module:
-//   0x3D1+n  cells 1-4  (2 bytes each, 1mV/bit, big-endian)
+// BMW i3 standard CSC CAN IDs
+// Each CSC broadcasts three sub-frames per cycle; one frame set per module:
+//   0x3D1+n  cells 1-12 (3 sub-frames, 4 cells each, 1mV/bit, big-endian)
 //   0x3B1+n  temperatures (2 bytes each, 0.1°C/bit, signed)
 // Module index n = 0..7 (module addresses 1..8 map to IDs 0x3D1..0x3D8)
-#define BMW_I3_CELL_BASE    0x3D1
-#define BMW_I3_TEMP_BASE    0x3B1
-#define BMW_I3_WAKE_ID      0x130
-#define BMW_I3_CELLS_PER_MOD  12    // 12 cells per i3 CSC module
-#define BMW_I3_MAX_MODS       8     // max 8 CSC modules in a pack
+#define BMW_I3_CELL_BASE      0x3D1
+#define BMW_I3_TEMP_BASE      0x3B1
+#define BMW_I3_WAKE_ID        0x130
+#define BMW_I3_CMD_ID         0x0A0  // management bus TX — find/assign/reset CSC IDs
+#define BMW_I3_BAL_RESET_ID   0x0B0  // balance reset TX frame
+#define BMW_I3_CELLS_PER_MOD  12     // 12 cells per i3 CSC module
+#define BMW_I3_MAX_MODS       16     // max 16 CSC modules (bus/Mini-E can have more)
+
+// ---------------------------------------------------------------------------
+// Mini-E and BMWI3BUS shared TX base
+// Both variants receive commands on 0x080+slot (one frame per module slot)
+// ---------------------------------------------------------------------------
+#define BMW_CSC_CMD_BASE        0x080   // TX: BMS->CSC command/keepalive
+
+// ---------------------------------------------------------------------------
+// BMWI3BUS variant RX frame IDs
+// Frame ID structure: bits[7:4] = type, bits[3:0] = module address (0-based)
+//   0x10N = heartbeat/status
+//   0x11N = init ack
+//   0x12N = cells 1-3   (LE 16-bit, 1 mV/bit)
+//   0x13N = cells 4-6
+//   0x14N = cells 7-9
+//   0x15N = cells 10-12
+//   0x16N = raw NTC ADC (3x LE 16-bit thermistors)
+//   0x17N = status2: data[4] = temp + 40 (degC)  [NOTE: 0-indexed byte 4]
+//   0x1CN = balance/fault flags
+//   0x1DN = additional status flags
+// ---------------------------------------------------------------------------
+#define BMWI3BUS_CELL_BASE      0x100   // lowest cell frame ID for bus variant
+#define BMWI3BUS_FRAME_MAX      0x1FF   // covers all bus variant frames
+
+// ---------------------------------------------------------------------------
+// Mini-E variant RX frame IDs
+// Frame ID structure: upper nibble = type, lower nibble = module (0-based addr)
+//   type 0x2 = cells 1-3   voltage: lo + (hi & 0x3F) * 256, result in mV
+//   type 0x3 = cells 4-6
+//   type 0x4 = cells 7-9
+//   type 0x5 = cells 10-12
+// Temperature: 0x170+mod_addr, data[0]-40=T1, data[1]-40=T2 (degC)
+// ---------------------------------------------------------------------------
+#define MINIE_CELL_BASE         0x0A0   // Mini-E: lowest cell frame ID
+#define MINIE_CELL_MAX          0x15F   // Mini-E: highest cell frame ID
+#define MINIE_TEMP_BASE         0x170   // Mini-E temperature frames
+#define MINIE_TEMP_MAX          0x17F
+#define MINIE_CELLS_PER_MOD     12
+
+// ---------------------------------------------------------------------------
+// Shared CRC8 finalxor table (used by both Mini-E and BMWI3BUS TX frames)
+// Indexed by slot (0-7). Defined as a file-scope const in CANManager.cpp.
+// Values: { 0xCF, 0xF5, 0xBB, 0x81, 0x27, 0x1D, 0x53, 0x69 }
+// ---------------------------------------------------------------------------
+#define BMW_CSC_CMD_INTERVAL_MS  24    // keepalive/command burst period (ms)
 
 // ---------------------------------------------------------------------------
 // EEPROM / NVS settings
 // Bump EEPROM_VERSION whenever EEPROMSettings layout changes
 // ---------------------------------------------------------------------------
-#define EEPROM_VERSION      0x17    // v6: cmuType, canInhibitEnabled, chargerHeartbeatID
+#define EEPROM_VERSION      0x18    // v7: 5-way cmuType (Tesla/i3/i3bus/MiniE/PHEV)
 #define EEPROM_PAGE         0
 
 #define DEFAULT_OVER_V          4.20f

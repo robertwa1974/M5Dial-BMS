@@ -23,6 +23,10 @@ ESP32-S3 port by **ronaegis**, used as the direct starting point for this projec
 BMW i3 CSC CAN protocol research by **Tom-evnut**:
 - https://github.com/Tom-evnut/TeslaBMSV2
 
+## BMW i3 BUS_variant CAN Protocol Reference
+
+BMW i3 CSC CAN protocol research by **hpeyerl**:
+- https://github.com/hpeyerl/bmw-i3-bms-tcan485
 
 ## Licence
 

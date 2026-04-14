@@ -601,8 +601,10 @@ bool BMSModuleManager::getAutoBalance()                { return autoBalance;    
 int BMSModuleManager::getModuleCells(int addr)
 {
     if (addr < 1 || addr > MAX_MODULE_ADDR) return 6;
-    // BMW i3: always 12 cells per module regardless of settings
-    if (settings.cmuType == CMU_BMW_I3) {
+    // All BMW CAN variants: always 12 cells per module
+    if (settings.cmuType == CMU_BMW_I3 ||
+        settings.cmuType == CMU_BMW_I3_BUS ||
+        settings.cmuType == CMU_BMW_MINIE) {
         modules[addr].setNumCells(BMW_I3_CELLS_PER_MOD);
         return BMW_I3_CELLS_PER_MOD;
     }
@@ -649,12 +651,35 @@ void BMSModuleManager::getAllVoltTempFromCAN()
         modules[x].setModuleVoltage(modV);
         modules[x].setTemperature(0, d.temp[0]);
         modules[x].setTemperature(1, d.temp[1]);
-        modules[x].setFaults(0);
-        modules[x].setAlerts(0);
+
+        // OV/UV per cell
+        uint8_t faultByte = 0, alertByte = 0;
+        for (int c = 0; c < BMW_I3_CELLS_PER_MOD; c++) {
+            float cv = d.cellV[c];
+            if (cv > 0.1f) {   // ignore zero / not-yet-received cells
+                if (cv > settings.OverVSetpoint)  faultByte |= 0x01;
+                if (cv < settings.UnderVSetpoint) faultByte |= 0x02;
+            }
+        }
+        // OT/UT
+        if (d.temp[0] > settings.OverTSetpoint || d.temp[1] > settings.OverTSetpoint)
+            alertByte |= 0x01;
+        if (d.temp[0] < settings.UnderTSetpoint || d.temp[1] < settings.UnderTSetpoint)
+            alertByte |= 0x02;
+        modules[x].setFaults(faultByte);
+        modules[x].setAlerts(alertByte);
 
         packVolt += modV;
     }
 
     int np = (settings.numParallel > 0) ? settings.numParallel : BMS_NUM_PARALLEL;
     if (np > 1) packVolt /= np;
+
+    // Update pack-level isFaulted flag
+    isFaulted = false;
+    for (int x = 1; x <= BMW_I3_MAX_MODS; x++) {
+        if (modules[x].isExisting() &&
+            (modules[x].getFaults() || modules[x].getAlerts()))
+            isFaulted = true;
+    }
 }
