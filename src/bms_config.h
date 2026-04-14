@@ -137,7 +137,10 @@ enum CmuType : uint8_t {
 #define BMW_I3_CMD_ID         0x0A0  // management bus TX — find/assign/reset CSC IDs
 #define BMW_I3_BAL_RESET_ID   0x0B0  // balance reset TX frame
 #define BMW_I3_CELLS_PER_MOD  12     // 12 cells per i3 CSC module
-#define BMW_I3_MAX_MODS       16     // max 16 CSC modules (bus/Mini-E can have more)
+#define BMW_I3_MAX_MODS       8      // hardware max: 8 CSC modules per CAN bus
+                                      // Standard i3: IDs 0x3D1-0x3D8 (8 fixed)
+                                      // i3 bus:      TX loop hardcoded slot < 8
+                                      // Mini-E:      lower nibble 0-7 in practice
 
 // ---------------------------------------------------------------------------
 // Mini-E and BMWI3BUS shared TX base
@@ -176,6 +179,32 @@ enum CmuType : uint8_t {
 #define MINIE_TEMP_BASE         0x170   // Mini-E temperature frames
 #define MINIE_TEMP_MAX          0x17F
 #define MINIE_CELLS_PER_MOD     12
+
+// ---------------------------------------------------------------------------
+// BMW PHEV SP06/SP41 CSC CAN IDs
+// Polled master/slave: BMS sends 0x080|slot every BMW_PHEV_CMD_RATE_MS (50ms).
+// One module per call; with 6 modules each module is polled every 300ms.
+//   RX 0x120-0x17F  cell voltages (6 sub-frame groups per module, LE 14-bit)
+//     type nibble 2-7 of lower byte: sub 0-5, 3 cells each (16 active of 18)
+//     Voltage encoding: lo + (hi & 0x3F) * 256 = millivolts (same as Mini-E)
+//     Commit condition: framesRx == 0x3F (all 6 sub-frames received)
+//     Cell update suppressed when status frame indicates balancing active
+//   RX 0x0A0-0x0AF  status / error frames (type 0xA per module)
+//     bytes 0-1 BE = errorWord, byte 2 = balstat
+//   RX 0x180-0x18F  temperatures (4 sensors per module)
+//     bytes 0-3: each uint8, value - 40 = degC
+// ---------------------------------------------------------------------------
+#define BMW_PHEV_CELL_BASE      0x120   // PHEV: lowest cell sub-frame ID
+#define BMW_PHEV_CELL_MAX       0x17F   // PHEV: highest cell sub-frame ID
+#define BMW_PHEV_STATUS_BASE    0x0A0   // PHEV: status/error frames (type 0xA)
+#define BMW_PHEV_TEMP_BASE      0x180   // PHEV: temperature frames
+#define BMW_PHEV_TEMP_MAX       0x18F   // PHEV: highest temperature frame ID
+#define BMW_PHEV_CMD_BASE       0x080   // PHEV: TX command base (shared with Mini-E/i3bus)
+#define BMW_PHEV_MGMT_ID        0x0A0   // PHEV: management reset TX ID
+#define BMW_PHEV_CELLS_PER_MOD  16      // 16 cells per PHEV CSC module (SP06/SP41)
+#define BMW_PHEV_MAX_MODS       6       // hardware max: 6 CSC modules per bus
+#define BMW_PHEV_CMD_RATE_MS    50      // PHEV: command period (ms) — one module per call
+#define PHEV_MAX_MODS           BMW_PHEV_MAX_MODS   // alias used by CANManager arrays
 
 // ---------------------------------------------------------------------------
 // Shared CRC8 finalxor table (used by both Mini-E and BMWI3BUS TX frames)

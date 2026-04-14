@@ -52,6 +52,8 @@ public:
     int   getModuleCells(int addr);
     // BMW i3 CAN-sourced data path (called instead of UART getAllVoltTemp)
     void  getAllVoltTempFromCAN();
+    // BMW PHEV polled data path
+    void  getAllVoltTempFromPHEV();
 
     // Per-module accessor
     BMSModule& getModule(int addr);

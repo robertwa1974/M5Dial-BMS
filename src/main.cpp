@@ -93,7 +93,8 @@ static void pollEncoder()
 static uint32_t lastBmsRead     = 0;
 static uint32_t lastCANSend     = 0;
 static uint32_t lastEncoderPoll = 0;
-static uint32_t lastCSCCmd      = 0;   // BMW i3 bus / Mini-E TX keepalive timer
+static uint32_t lastCSCCmd      = 0;   // BMW i3 bus / Mini-E TX keepalive timer (24ms)
+static uint32_t lastPhevCmd     = 0;   // BMW PHEV TX poll timer (50ms, separate from above)
 static int      lastEncoderCount = 0;
 
 #define BMS_READ_INTERVAL_MS    1000
@@ -211,9 +212,13 @@ void setup()
                         settings.cmuType);
         display.showStartup("BMW CAN mode...");
         // Modules will appear once CAN RX task sees their frames
+    } else if (settings.cmuType == CMU_BMW_PHEV) {
+        Logger::console("BMW PHEV mode: polled master/slave, awaiting CAN start");
+        display.showStartup("BMW PHEV mode...");
+        // Modules silent until CAN starts and sendPhevCommand() begins polling
     } else {
-        Logger::console("CMU type %d: reserved, not implemented", settings.cmuType);
-        display.showStartup("Reserved CMU");
+        Logger::console("CMU type %d: unknown", settings.cmuType);
+        display.showStartup("Unknown CMU");
     }
 
     int n = bms.getNumModules();
@@ -276,6 +281,15 @@ void loop()
         if (settings.cmuType == CMU_BMW_I3_BUS) can.sendBMWI3BUSCommand();
     }
 
+    // BMW PHEV periodic TX poll (one module per call, 50ms rate)
+    if (can.isRunning() &&
+        settings.cmuType == CMU_BMW_PHEV &&
+        (now - lastPhevCmd >= BMW_PHEV_CMD_RATE_MS))
+    {
+        lastPhevCmd = now;
+        can.sendPhevCommand();
+    }
+
     // BMS read
     if (now - lastBmsRead >= BMS_READ_INTERVAL_MS) {
         lastBmsRead = now;
@@ -286,8 +300,9 @@ void loop()
                    settings.cmuType == CMU_BMW_I3_BUS ||
                    settings.cmuType == CMU_BMW_MINIE) {
             bms.getAllVoltTempFromCAN();
+        } else if (settings.cmuType == CMU_BMW_PHEV) {
+            bms.getAllVoltTempFromPHEV();
         }
-        // CMU_BMW_PHEV: not yet implemented, no-op
 
         // Auto-balance (Tesla UART only - i3 modules balance internally)
         if (settings.cmuType == CMU_TESLA &&

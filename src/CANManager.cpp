@@ -63,11 +63,14 @@ CANManager::CANManager()
       lastChargerSeen(0), canCurrentA(0.0f),
       miniE_nextmes(0), miniE_mescycle(0), miniE_testcycle(0),
       bmwI3Bus_counter(0),
-      unassignedSeen(false)
+      unassignedSeen(false),
+      phevNextMod(0), phevMesCycle(0), phevTestCycle(0)
 {
     memset(i3data,        0, sizeof(i3data));
     memset(i3acc,         0, sizeof(i3acc));
     memset(unassignedDMC, 0, sizeof(unassignedDMC));
+    memset(phevData,      0, sizeof(phevData));
+    memset(phevAcc,       0, sizeof(phevAcc));
 }
 
 // ---------------------------------------------------------------------------
@@ -112,10 +115,12 @@ bool CANManager::begin()
     if (settings.cmuType == CMU_BMW_I3) {
         sendI3WakeFrame();
         // ID assignment is driven externally by serial console / web UI on demand
+    } else if (settings.cmuType == CMU_BMW_PHEV) {
+        // PHEV: broadcast reset to ensure all modules start with clean state
+        sendPhevResetIDs();
     }
     // CMU_BMW_I3_BUS and CMU_BMW_MINIE: command TX driven from main loop
     // CMU_TESLA: no CAN startup needed (UART path)
-    // CMU_BMW_PHEV: not yet implemented
 
     return true;
 }
@@ -325,6 +330,73 @@ void CANManager::processRxFrame(const twai_message_t &msg)
         return;
     }
 
+    // --- BMW PHEV status/error frames: 0x0A0-0x0AF (type 0xA per module slot) ---
+    // bytes 0-1 BE = errorWord, byte 2 = balstat (nonzero = balancing active)
+    if (settings.cmuType == CMU_BMW_PHEV &&
+        id >= BMW_PHEV_STATUS_BASE && id <= (BMW_PHEV_STATUS_BASE + PHEV_MAX_MODS - 1))
+    {
+        int mod = (int)(id - BMW_PHEV_STATUS_BASE) + 1;  // 1..PHEV_MAX_MODS
+        if (mod < 1 || mod > PHEV_MAX_MODS || dlc < 3) return;
+        phevData[mod].errorWord  = ((uint16_t)msg.data[0] << 8) | msg.data[1];
+        phevData[mod].balstat    = msg.data[2];
+        phevData[mod].lastSeenMs = millis();
+        return;
+    }
+
+    // --- BMW PHEV cell voltage frames: 0x120-0x17F ---
+    // type nibble (bits[7:4] of lower byte): 2-7 = sub-frame 0-5
+    // 3 cells per sub-frame, LE 14-bit: lo + (hi & 0x3F) * 256 = millivolts
+    // Cell update is suppressed when balstat is active (balancing in progress)
+    if (settings.cmuType == CMU_BMW_PHEV &&
+        id >= BMW_PHEV_CELL_BASE && id <= BMW_PHEV_CELL_MAX)
+    {
+        int mod_addr = (int)(id & 0x00F);
+        int type     = (int)((id & 0x0F0) >> 4);
+        int mod      = mod_addr + 1;
+        if (mod < 1 || mod > PHEV_MAX_MODS) return;
+
+        int sub = -1;
+        if (type >= 2 && type <= 7) sub = type - 2;  // sub 0-5
+
+        if (sub >= 0 && dlc >= 6) {
+            // Suppress cell update while module reports balancing active
+            if (phevData[mod].balstat != 0) return;
+
+            int base = sub * 3;
+            for (int c = 0; c < 3 && (base + c) < BMW_PHEV_CELLS_PER_MOD; c++) {
+                uint8_t lo = msg.data[c * 2];
+                uint8_t hi = msg.data[c * 2 + 1];
+                if (hi < 0x40) {
+                    phevAcc[mod].cells[base + c] =
+                        (float)(lo + (hi & 0x3F) * 256) / 1000.0f;
+                }
+            }
+            phevAcc[mod].framesRx |= (1 << sub);
+
+            if (phevAcc[mod].framesRx == 0x3F) {   // all 6 sub-frames received
+                memcpy(phevData[mod].cellV, phevAcc[mod].cells,
+                       sizeof(phevAcc[mod].cells));
+                phevData[mod].fresh      = true;
+                phevData[mod].lastSeenMs = millis();
+                phevAcc[mod].framesRx    = 0;
+            }
+        }
+        return;
+    }
+
+    // --- BMW PHEV temperature frames: 0x180-0x18F ---
+    // 4 sensors per module; each byte: value - 40 = degC
+    if (settings.cmuType == CMU_BMW_PHEV &&
+        id >= BMW_PHEV_TEMP_BASE && id <= BMW_PHEV_TEMP_MAX)
+    {
+        int mod = (int)(id - BMW_PHEV_TEMP_BASE) + 1;
+        if (mod < 1 || mod > PHEV_MAX_MODS || dlc < 4) return;
+        for (int t = 0; t < 4; t++)
+            phevData[mod].temp[t] = (float)msg.data[t] - 40.0f;
+        phevData[mod].lastSeenMs = millis();
+        return;
+    }
+
     // Feed web CAN log for any other frames
     wifiLogCAN(id, (uint8_t *)msg.data, dlc);
 }
@@ -373,7 +445,7 @@ void CANManager::sendI3WakeFrame()
 // ---------------------------------------------------------------------------
 void CANManager::sendI3FindUnassigned()
 {
-    uint8_t data[8] = {0};
+    uint8_t data[8] = {0x37, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
     sendFrame(BMW_I3_CMD_ID, data, 8);
     Logger::info("CAN: i3 find-unassigned sent (0x%03X)", BMW_I3_CMD_ID);
 }
@@ -386,27 +458,30 @@ void CANManager::sendI3AssignID(uint8_t newID, const uint8_t dmcBytes[8])
 {
     uint8_t data[8];
 
-    // Frame 1: command=0x01, new ID, first 6 DMC bytes
-    data[0] = 0x01;
-    data[1] = newID;
-    memcpy(&data[2], dmcBytes, 6);
+    // Frame 1: first 4 DMC bytes
+    data[0] = 0x12; data[1] = 0xAB;
+    memcpy(&data[2], dmcBytes, 4);
+    data[6] = 0xFF; data[7] = 0xFF;
     sendFrame(BMW_I3_CMD_ID, data, 8);
     delay(30);
 
-    // Frame 2: command=0x02, new ID, last 2 DMC bytes
-    data[0] = 0x02;
-    data[1] = newID;
-    memcpy(&data[2], &dmcBytes[6], 2);
-    memset(&data[4], 0, 4);
+    // Frame 2: last 4 DMC bytes
+    data[0] = 0x12; data[1] = 0xBA;
+    memcpy(&data[2], &dmcBytes[4], 4);
+    data[6] = 0xFF; data[7] = 0xFF;
     sendFrame(BMW_I3_CMD_ID, data, 8);
     delay(10);
 
-    // Frame 3: commit/confirm
-    data[0] = 0x03;
-    data[1] = newID;
-    memset(&data[2], 0, 6);
+    // Frame 3: assign the ID
+    memset(data, 0xFF, 8);
+    data[0] = 0x5B; data[1] = newID;
     sendFrame(BMW_I3_CMD_ID, data, 8);
     delay(10);
+
+    // Frame 4: confirm
+    memset(data, 0xFF, 8);
+    data[0] = 0x37; data[1] = newID;
+    sendFrame(BMW_I3_CMD_ID, data, 8);
 
     Logger::info("CAN: i3 assign ID %d sent", newID);
 }
@@ -416,7 +491,7 @@ void CANManager::sendI3AssignID(uint8_t newID, const uint8_t dmcBytes[8])
 // ---------------------------------------------------------------------------
 void CANManager::sendI3ResetAllIDs(uint8_t maxID)
 {
-    uint8_t data[8] = {0};
+    uint8_t data[8] = {0xA1, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
     for (uint8_t id = 0; id <= maxID; id++) {
         data[1] = id;
         sendFrame(BMW_I3_CMD_ID, data, 8);
@@ -529,6 +604,85 @@ void CANManager::sendBMWI3BUSCommand()
     }
 
     bmwI3Bus_counter++;
+}
+
+// ---------------------------------------------------------------------------
+// getPhevSlaveData - safe copy of PHEV module data for BMSModuleManager
+// ---------------------------------------------------------------------------
+bool CANManager::getPhevSlaveData(int addr, PhevSlaveData &out)
+{
+    if (addr < 1 || addr > PHEV_MAX_MODS) return false;
+    out = phevData[addr];   // struct copy
+    phevData[addr].fresh = false;
+    return out.lastSeenMs > 0;
+}
+
+// ---------------------------------------------------------------------------
+// sendPhevCommand - BMW PHEV SP06/SP41 polled-master TX command
+// Called from main loop every BMW_PHEV_CMD_RATE_MS (50ms).
+// Sends one frame to the current module slot (phevNextMod) and advances.
+// Same buf layout as sendBMWI3BUSCommand; D4/counter ramp identical.
+// ---------------------------------------------------------------------------
+void CANManager::sendPhevCommand()
+{
+    uint8_t slot   = phevNextMod;       // 0..PHEV_MAX_MODS-1
+    uint32_t msgId = BMW_PHEV_CMD_BASE | slot;
+
+    // D4 and counter: 4-cycle init then steady state (matches BMWI3BUS pattern)
+    static const uint8_t init_d4[4]      = { 0x00, 0x00, 0x00, 0x10 };
+    static const uint8_t init_counter[4] = { 0x10, 0x20, 0x34, 0x40 };
+    uint8_t d4, counter;
+
+    // Use a per-slot independent ramp index: phevTestCycle counts full rotations
+    // through all slots; shared init sequence based on absolute call count.
+    uint16_t callIdx = (uint16_t)(phevMesCycle + slot);
+    if (callIdx < 4) {
+        d4      = init_d4[callIdx];
+        counter = init_counter[callIdx];
+    } else {
+        d4      = 0x50;
+        counter = (uint8_t)(0x40 + ((callIdx - 3) * 0x10)) & 0xFF;
+    }
+
+    uint8_t buf[8];
+    buf[0] = 0xC7;
+    buf[1] = 0x10;
+    buf[2] = 0x00;
+    buf[3] = (phevTestCycle < 3) ? 0x00 : d4;
+    buf[4] = 0x20;
+    buf[5] = 0x00;
+    buf[6] = (uint8_t)(phevMesCycle << 4);
+    if (phevTestCycle == 2) buf[6] |= 0x04;
+    buf[7] = cscChecksum(msgId, buf, 8, slot);
+
+    sendFrame(msgId, buf, 8);
+
+    // Advance to next module; wrap and increment cycle counters
+    phevNextMod++;
+    if (phevNextMod >= PHEV_MAX_MODS) {
+        phevNextMod = 0;
+        phevMesCycle = (phevMesCycle + 1) & 0x0F;
+        if (phevTestCycle < 4) phevTestCycle++;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// sendPhevResetIDs - reset all PHEV CSC module IDs then broadcast find
+// Sends 0xA1 reset to each slot ID (0..PHEV_MAX_MODS-1) then a 0x37
+// broadcast to BMW_PHEV_MGMT_ID to let un-addressed modules announce.
+// ---------------------------------------------------------------------------
+void CANManager::sendPhevResetIDs()
+{
+    uint8_t data[8] = {0xA1, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    for (uint8_t id = 0; id < PHEV_MAX_MODS; id++) {
+        data[1] = id;
+        sendFrame(BMW_PHEV_MGMT_ID, data, 8);
+        delay(2);
+    }
+    // Broadcast find-unassigned
+    uint8_t findData[8] = {0x37, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    sendFrame(BMW_PHEV_MGMT_ID, findData, 8);
+    Logger::info("CAN: PHEV reset IDs 0..%d + find broadcast sent", PHEV_MAX_MODS - 1);
 }
 
 // ---------------------------------------------------------------------------

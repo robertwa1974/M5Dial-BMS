@@ -601,12 +601,17 @@ bool BMSModuleManager::getAutoBalance()                { return autoBalance;    
 int BMSModuleManager::getModuleCells(int addr)
 {
     if (addr < 1 || addr > MAX_MODULE_ADDR) return 6;
-    // All BMW CAN variants: always 12 cells per module
+    // BMW i3 CAN variants: always 12 cells per module
     if (settings.cmuType == CMU_BMW_I3 ||
         settings.cmuType == CMU_BMW_I3_BUS ||
         settings.cmuType == CMU_BMW_MINIE) {
         modules[addr].setNumCells(BMW_I3_CELLS_PER_MOD);
         return BMW_I3_CELLS_PER_MOD;
+    }
+    // BMW PHEV: always 16 cells per module
+    if (settings.cmuType == CMU_BMW_PHEV) {
+        modules[addr].setNumCells(BMW_PHEV_CELLS_PER_MOD);
+        return BMW_PHEV_CELLS_PER_MOD;
     }
     uint8_t ov = settings.moduleCells[addr];
     int n = (ov >= 1 && ov <= 6) ? (int)ov
@@ -678,6 +683,81 @@ void BMSModuleManager::getAllVoltTempFromCAN()
     // Update pack-level isFaulted flag
     isFaulted = false;
     for (int x = 1; x <= BMW_I3_MAX_MODS; x++) {
+        if (modules[x].isExisting() &&
+            (modules[x].getFaults() || modules[x].getAlerts()))
+            isFaulted = true;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// getAllVoltTempFromPHEV - populate BMSModule objects from BMW PHEV CAN data
+// Called instead of UART getAllVoltTemp() when cmuType == CMU_BMW_PHEV.
+// Modules are polled by sendPhevCommand() (50ms interval); data arrives
+// asynchronously in phevData[] via the CAN RX task.
+// ---------------------------------------------------------------------------
+void BMSModuleManager::getAllVoltTempFromPHEV()
+{
+    packVolt = 0.0f;
+    numFoundModules = 0;
+
+    for (int x = 1; x <= BMW_PHEV_MAX_MODS; x++) {
+        PhevSlaveData d;
+        if (!can.getPhevSlaveData(x, d)) {
+            if (modules[x].isExisting()) {
+                // Keep as existing until timeout confirmed below
+            }
+            continue;
+        }
+
+        // Module alive if seen within 3x the poll cycle for all 6 modules
+        bool alive = (millis() - d.lastSeenMs) < 3000;
+        modules[x].setExists(alive);
+        if (!alive) continue;
+
+        numFoundModules++;
+
+        // Push cell voltages (16 cells per PHEV module)
+        modules[x].setNumCells(BMW_PHEV_CELLS_PER_MOD);
+        float modV = 0.0f;
+        for (int c = 0; c < BMW_PHEV_CELLS_PER_MOD; c++) {
+            modules[x].setCellVoltage(c, d.cellV[c]);
+            modV += d.cellV[c];
+        }
+        modules[x].setModuleVoltage(modV);
+
+        // PHEV has 4 temp sensors; expose first two through standard interface
+        modules[x].setTemperature(0, d.temp[0]);
+        modules[x].setTemperature(1, d.temp[1]);
+
+        // OV/UV per cell
+        uint8_t faultByte = 0, alertByte = 0;
+        for (int c = 0; c < BMW_PHEV_CELLS_PER_MOD; c++) {
+            float cv = d.cellV[c];
+            if (cv > 0.1f) {   // ignore zero / not-yet-received cells
+                if (cv > settings.OverVSetpoint)  faultByte |= 0x01;
+                if (cv < settings.UnderVSetpoint) faultByte |= 0x02;
+            }
+        }
+        // OT/UT across all 4 sensors
+        for (int t = 0; t < 4; t++) {
+            if (d.temp[t] > settings.OverTSetpoint)  alertByte |= 0x01;
+            if (d.temp[t] < settings.UnderTSetpoint) alertByte |= 0x02;
+        }
+        // Propagate module errorWord as fault if nonzero
+        if (d.errorWord != 0) faultByte |= 0x04;
+
+        modules[x].setFaults(faultByte);
+        modules[x].setAlerts(alertByte);
+
+        packVolt += modV;
+    }
+
+    int np = (settings.numParallel > 0) ? settings.numParallel : BMS_NUM_PARALLEL;
+    if (np > 1) packVolt /= np;
+
+    // Update pack-level isFaulted flag
+    isFaulted = false;
+    for (int x = 1; x <= BMW_PHEV_MAX_MODS; x++) {
         if (modules[x].isExisting() &&
             (modules[x].getFaults() || modules[x].getAlerts()))
             isFaulted = true;

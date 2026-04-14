@@ -59,9 +59,9 @@ public:
     void setAlerts(uint8_t a);
 
 private:
-    float   cellVolt[12];           // up to 12 cells (6=Tesla, 12=BMW i3)
-    float   lowestCellVolt[12];
-    float   highestCellVolt[12];
+    float   cellVolt[16];           // up to 16 cells (6=Tesla, 12=BMW i3, 16=BMW PHEV)
+    float   lowestCellVolt[16];
+    float   highestCellVolt[16];
     float   moduleVolt;
     float   temperatures[2];
     float   lowestTemperature;
@@ -76,5 +76,5 @@ private:
     int     CUVFaults;
     int     sensor;             // 0=avg both, 1=TS1 only, 2=TS2 only
     uint8_t moduleAddress;      // 1 to MAX_MODULE_ADDR (0x3E)
-    uint8_t numCells;           // active cell count for this module (1-12)
+    uint8_t numCells;           // active cell count for this module (1-16)
 };
