@@ -73,6 +73,7 @@ static struct {
     lv_obj_t *faultBadge;
     lv_obj_t *navLabel;
     int       addr;
+    int       builtCells;   // cell count this page was built for; -1 = never built
 } modPage;
 
 // ---------------------------------------------------------------------------
@@ -167,6 +168,7 @@ bool Display::begin()
     lv_obj_add_style(defScr, &styleBg, 0);
     lv_obj_set_style_bg_color(defScr, lv_color_hex(0x0F172A), 0);
 
+    modPage.builtCells = -1;   // force rebuild on first real navigation
     buildPackPage();
     buildModulePage(1);
     buildSettingsPage();
@@ -415,8 +417,9 @@ void Display::buildModulePage(int addr)
     lv_label_set_text(nav, "Rot=nav  Btn=pack");
     modPage.navLabel = nav;
 
-    modPage.screen = scr;
-    modPage.addr   = addr;
+    modPage.screen     = scr;
+    modPage.addr       = addr;
+    modPage.builtCells = activeCells;
 }
 
 // ---------------------------------------------------------------------------
@@ -514,13 +517,24 @@ void Display::updateModulePage(int addr)
     BMSModule &mod = bms.getModule(addr);
     if (!mod.isExisting()) { setPage(0); return; }
 
+    int activeCells = bms.getModuleCells(addr);
+
+    // Rebuild the LVGL screen if the address or cell count has changed since
+    // the last build. This handles the common case where CAN data arrives after
+    // the initial build (which defaults to 6 cells) causing wrong layout geometry.
+    if (addr != modPage.addr || activeCells != modPage.builtCells) {
+        if (modPage.screen) {
+            lv_obj_del(modPage.screen);
+            modPage.screen = nullptr;
+        }
+        buildModulePage(addr);
+    }
+
     modPage.addr = addr;
 
     char buf[48];
     snprintf(buf, sizeof(buf), "Mod#%d  %.2fV", addr, mod.getModuleVoltage());
     lv_label_set_text(modPage.titleLabel, buf);
-
-    int activeCells = bms.getModuleCells(addr);
 
     for (int i = 0; i < MAX_CELLS_DISPLAY; i++) {
         if (i >= activeCells) {
@@ -594,7 +608,7 @@ void Display::updateSettingsPage()
 {
     char buf[320];
     snprintf(buf, sizeof(buf),
-        "TeslaBMS v7\n"
+        "TeslaBMS v6\n"
         "CMU: %s\n"
         "Cells: %d  Ser: %d  Par: %d\n"
         "OV:%.2fV  UV:%.2fV\n"
@@ -603,11 +617,7 @@ void Display::updateSettingsPage()
         "ChgHB: 0x%03X  %s\n"
         "AutoBal: %s\n"
         "Mods: %d / %d max",
-        (settings.cmuType == CMU_TESLA)       ? "Tesla UART"  :
-        (settings.cmuType == CMU_BMW_I3)      ? "BMW i3 std"  :
-        (settings.cmuType == CMU_BMW_I3_BUS)  ? "BMW i3 bus"  :
-        (settings.cmuType == CMU_BMW_MINIE)   ? "BMW Mini-E"  :
-                                                "BMW PHEV",
+        settings.cmuType == CMU_TESLA ? "Tesla UART" : "BMW i3 CAN",
         settings.numCells, settings.numSeries, settings.numParallel,
         settings.OverVSetpoint, settings.UnderVSetpoint,
         settings.balanceVoltage, settings.balanceHyst,
