@@ -43,8 +43,8 @@
 //   Grove B Pin 1 (GND)   = GND
 // TWAI peripheral is distinct from UART; no iomux conflict on these pins.
 // ---------------------------------------------------------------------------
-#define PIN_CAN_TX              1     // GPIO1 Grove B Yellow
-#define PIN_CAN_RX              2     // GPIO2 Grove B White
+#define PIN_CAN_TX              2     // GPIO1 Grove B Yellow
+#define PIN_CAN_RX              1     // GPIO2 Grove B White
 #define CAN_BAUD_RATE           500000
 
 // ---------------------------------------------------------------------------

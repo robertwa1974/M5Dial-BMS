@@ -81,8 +81,7 @@ static String decodeCAN(uint32_t id, uint8_t *d)
         case 0x35F:
             snprintf(buf,sizeof(buf),"Chem:%.2s HW:%d.%d FW:%d.%d",(char*)d,d[3],d[2],d[5],d[4]);
             return buf;
-        default: {
-            char buf[80];
+        default:
             // BMWI3BUS / Mini-E TX keepalive frames
             if (id >= 0x080 && id <= 0x087) {
                 snprintf(buf, sizeof(buf), "CSC cmd slot%d", (int)(id & 0x0F));
@@ -108,8 +107,16 @@ static String decodeCAN(uint32_t id, uint8_t *d)
             if (id == 0x4A0) return "i3 CSC unassigned reply";
             if (id == 0x0A0) return "i3 CSC mgmt cmd";
             if (id == 0x0B0) return "i3 bal reset";
+            // Standard i3 cell/temp frames
+            if (id >= 0x3D1 && id <= 0x3D8) {
+                snprintf(buf, sizeof(buf), "i3 cells mod%d", (int)(id - 0x3D0));
+                return buf;
+            }
+            if (id >= 0x3B1 && id <= 0x3B8) {
+                snprintf(buf, sizeof(buf), "i3 temp mod%d", (int)(id - 0x3B0));
+                return buf;
+            }
             return "";
-        }
     }
 }
 
@@ -440,7 +447,7 @@ function renderSettingsForm(){
   // We show all slots 1..maxModules that have an override set, plus allow setting any 1..20
   html+=`<div class="sf-group" style="grid-column:span 2">
   <h3>CMU Type &amp; Balance Inhibit (v6)</h3>
-  <div class=\"row\"><label>CMU Type (reboot)</label><select id=\"cmuType\"><option value=\"0\">Tesla UART (BQ76PL536A)</option><option value=\"1\">BMW i3 CSC — standard</option><option value=\"2\">BMW i3 CSC — bus pack (Vicinity)</option><option value=\"3\">BMW Mini-E CSC</option><option value=\"4\">BMW PHEV SP06/SP41</option></select></div>
+  <div class=\"row\"><label>CMU Type (reboot)</label><select id=\"cmuType\"><option value=\"0\">Tesla UART</option><option value=\"1\">BMW i3 CAN</option></select></div>
   <div class=\"row\"><label>Balance Inhibit</label><select id=\"canInhibitEnabled\"><option value=\"0\">GPIO only</option><option value=\"1\">GPIO+CAN charger</option></select></div>
   <div class=\"row\"><label>Charger HB ID</label><input type=\"text\" id=\"chargerHeartbeatID\" style=\"width:80px\" placeholder=\"0x305\"></div>
   <div class=\"row\"><label>Charger active</label><span id=\"chargerStatus\" style=\"font-weight:bold\">--</span></div>
@@ -577,12 +584,6 @@ bool WiFiManager::begin()
         pack["canInhibit"]      = (bool)settings.canInhibitEnabled;
         pack["canCurrentA"]     = can.getCanCurrentA();
         pack["cmuType"]         = (int)settings.cmuType;
-        {
-            static const char* kCmuNames[] = {
-                "Tesla UART", "BMW i3 std", "BMW i3 bus", "BMW Mini-E", "BMW PHEV"
-            };
-            pack["cmuName"] = kCmuNames[settings.cmuType < 5 ? settings.cmuType : 0];
-        }
         pack["uvSetpoint"]      = settings.UnderVSetpoint;
         pack["ovSetpoint"]      = settings.OverVSetpoint;
         pack["ignoreTempThresh"]= settings.IgnoreTempThresh;
@@ -603,7 +604,8 @@ bool WiFiManager::begin()
             mo["t1"]        = serialized(String(m.getTemperature(0), 1));
             mo["t2"]        = serialized(String(m.getTemperature(1), 1));
             JsonArray cells = mo["cells"].to<JsonArray>();
-            for (int c = 0; c < 6; c++)
+            int nc = bms.getModuleCells(i);
+            for (int c = 0; c < nc; c++)
                 cells.add(serialized(String(m.getCellVoltage(c), 3)));
         }
 
@@ -736,7 +738,7 @@ bool WiFiManager::begin()
             if (!j["batteryID"].isNull())   { int v=j["batteryID"]; if(v>=1&&v<=14) { settings.batteryID=(uint8_t)v; changed=true; } }
             if (!j["logLevel"].isNull())    { int v=j["logLevel"];  if(v>=0&&v<=4)  { settings.logLevel=(uint8_t)v;  changed=true; } }
             // v6: CMU type and balance inhibit
-            if (!j["cmuType"].isNull())          { int v=j["cmuType"]; if(v>=0&&v<=4) { settings.cmuType=(uint8_t)v; changed=true; } }
+            if (!j["cmuType"].isNull())          { int v=j["cmuType"]; if(v==0||v==1) { settings.cmuType=(uint8_t)v; changed=true; } }
             if (!j["canInhibitEnabled"].isNull()) { settings.canInhibitEnabled=(j["canInhibitEnabled"].as<int>()!=0)?1:0; changed=true; }
             if (!j["chargerHeartbeatID"].isNull()) { int v=j["chargerHeartbeatID"]; if(v>0&&v<=0x7FF) { settings.chargerHeartbeatID=(uint32_t)v; changed=true; } }
             // Per-module cell count overrides: array index 1..MAX_MODULE_ADDR

@@ -103,13 +103,16 @@ bool CANManager::begin()
         "CAN_RX",
         4096,
         this,
-        5,              // priority (higher than loop)
+        5,
         &rxTaskHandle,
-        0               // core 0
+        0
     );
 
     Logger::info("CAN started: TX=GPIO%d RX=GPIO%d 500kbps, RX task running",
                  PIN_CAN_TX, PIN_CAN_RX);
+
+    // Allow CSC modules time to power up and join the bus before first TX
+    vTaskDelay(pdMS_TO_TICKS(1000));
 
     // Mode-specific startup
     if (settings.cmuType == CMU_BMW_I3) {
@@ -150,9 +153,29 @@ void CANManager::rxTaskFn(void *param)
 {
     CANManager *self = (CANManager *)param;
     twai_message_t msg;
+    twai_status_info_t status;
+
     while (self->running) {
         if (twai_receive(&msg, pdMS_TO_TICKS(100)) == ESP_OK) {
             self->processRxFrame(msg);
+        }
+
+        // Bus-off recovery: check every 100ms (same cadence as receive timeout)
+        if (twai_get_status_info(&status) == ESP_OK &&
+            status.state == TWAI_STATE_BUS_OFF)
+        {
+            Logger::info("CAN: bus-off detected, initiating recovery...");
+            twai_initiate_recovery();
+            // Wait for recovery to complete (max ~200ms)
+            for (int i = 0; i < 20 && self->running; i++) {
+                vTaskDelay(pdMS_TO_TICKS(10));
+                if (twai_get_status_info(&status) == ESP_OK &&
+                    status.state == TWAI_STATE_RUNNING)
+                {
+                    Logger::info("CAN: bus-off recovery complete");
+                    break;
+                }
+            }
         }
     }
     vTaskDelete(nullptr);
@@ -163,6 +186,14 @@ void CANManager::rxTaskFn(void *param)
 // ---------------------------------------------------------------------------
 void CANManager::processRxFrame(const twai_message_t &msg)
 {
+    static uint32_t rxCount = 0;
+    static uint32_t lastLog = 0;
+    rxCount++;
+    if (millis() - lastLog > 2000) {
+        lastLog = millis();
+        Logger::info("CAN RX: %lu frames received so far", rxCount);
+    }
+    
     uint32_t id  = msg.identifier;
     uint8_t  dlc = msg.data_length_code;
 
