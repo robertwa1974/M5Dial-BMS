@@ -1,19 +1,12 @@
 #pragma once
 // =============================================================================
-// CANManager.h  v7 - SimpBMS-compatible CAN TX + CAN RX
+// CANManager.h  v6 - SimpBMS-compatible CAN TX + CAN RX
 //
-// TX (same as v6): SimpBMS frames 0x351/355/356/35A/35E/35F every 1s
-// RX (new v7):
+// TX (same as v5): SimpBMS frames 0x351/355/356/35A/35E/35F every 1s
+// RX (new v6):
 //   - FreeRTOS task calls twai_receive() continuously on core 0
 //   - Charger/inverter heartbeat detection -> balance inhibit via CAN
-//   - BMW i3 standard CSC (0x3D1-0x3D8 cells, 0x3B1-0x3B8 temps)
-//   - BMW i3 bus-pack CSC (0x120-0x15N cells, 0x17N temp)
-//   - BMW Mini-E CSC (0x120-0x15N cells via different voltage formula, 0x17N temp)
-//
-// TX (new v7):
-//   - Mini-E periodic command   : sendMiniECommand()   every BMW_CSC_CMD_INTERVAL_MS
-//   - BMWI3BUS periodic keepalive: sendBMWI3BUSCommand() every BMW_CSC_CMD_INTERVAL_MS
-//   - i3 standard enumeration helpers: sendI3FindUnassigned/AssignID/ResetAllIDs/BalanceReset
+//   - BMW i3 CSC cell/temp frames decoded into I3SlaveData staging buffer
 //
 // Hardware: SN65HVD230 or MCP2551 on Grove Port B
 //   GPIO1 = CAN TX, GPIO2 = CAN RX
@@ -22,36 +15,14 @@
 #include <driver/twai.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "bms_config.h"
 
-// ---------------------------------------------------------------------------
-// I3SlaveData — populated by CAN RX task, consumed by BMSModuleManager
-// Shared by all three BMW CAN variants (standard i3, i3 bus, Mini-E).
-// ---------------------------------------------------------------------------
-// I3_MAX_MODS: index 0 is unused; valid slots are 1..8 (max 8 CSC per bus)
-#define I3_MAX_MODS 9
-
-// PHEV_MAX_MODS defined in bms_config.h as BMW_PHEV_MAX_MODS alias (= 6)
-
+// BMW i3 staging data populated by CAN RX task, read by BMSModuleManager
+#define I3_MAX_MODS 9   // index 0 unused; 1..8 = module address
 struct I3SlaveData {
-    float    cellV[12];      // cell voltages in volts
-    float    temp[2];        // temperatures in degC
-    bool     fresh;          // true = new data since last read
-    uint32_t lastSeenMs;     // millis() of last received frame
-    uint8_t  dmcBytes[8];    // raw bytes from 0x4A0 enumeration reply (i3 std)
-};
-
-// ---------------------------------------------------------------------------
-// PhevSlaveData — populated by CAN RX task for BMW PHEV SP06/SP41 modules.
-// Index 0 is unused; valid slots are 1..PHEV_MAX_MODS.
-// ---------------------------------------------------------------------------
-struct PhevSlaveData {
-    float    cellV[16];    // cell voltages in volts (up to 16 cells)
-    float    temp[4];      // temperatures in degC (4 sensors)
-    uint16_t errorWord;    // error/status word from status frame (bytes 0-1 BE)
-    uint8_t  balstat;      // balancing status byte (byte 2 of status frame)
-    bool     fresh;        // true = new data since last read
-    uint32_t lastSeenMs;   // millis() of last received frame
+    float    cellV[12];     // cell voltages in volts
+    float    temp[2];       // temperatures in degC
+    bool     fresh;         // true = new data since last read
+    uint32_t lastSeenMs;    // millis() of last received frame
 };
 
 class CANManager {
@@ -61,7 +32,7 @@ public:
     void end();
     bool isRunning();
 
-    // TX — SimpBMS outbound summary frames
+    // TX
     void sendBatterySummary();
     void sendFrame(uint32_t id, uint8_t *data, uint8_t len);
 
@@ -69,35 +40,14 @@ public:
     void processRxFrame(const twai_message_t &msg);
 
     // Charger/inverter presence
-    bool  getChargerActive();
-    float getCanCurrentA();
+    bool     getChargerActive();
+    float    getCanCurrentA();
+    bool     hasExternalDevice() const;       // true once any non-CSC frame received
+    uint32_t getI3LastSeen(int addr) const;   // lastSeenMs for module addr
 
     // BMW i3 slave data access
     bool  getI3SlaveData(int addr, I3SlaveData &out);
     void  sendI3WakeFrame();
-
-    // BMW PHEV slave data access and command TX
-    bool  getPhevSlaveData(int addr, PhevSlaveData &out);
-    void  sendPhevCommand();       // send one poll frame (rotating through modules)
-    void  sendPhevResetIDs();      // reset all CSC module IDs then broadcast find
-
-    // TX — Mini-E periodic command (call from main loop every BMW_CSC_CMD_INTERVAL_MS)
-    void sendMiniECommand();
-
-    // TX — BMWI3BUS periodic keepalive (call from main loop every BMW_CSC_CMD_INTERVAL_MS)
-    // Sends 8 frames (0x080-0x087): init sequence for first 4 calls then steady state.
-    void sendBMWI3BUSCommand();
-
-    // TX — BMW i3 standard enumeration helpers
-    void sendI3FindUnassigned();
-    void sendI3AssignID(uint8_t newID, const uint8_t dmcBytes[8]);
-    void sendI3ResetAllIDs(uint8_t maxID = 14);
-    void sendI3BalanceReset();
-
-    // Unassigned CSC detection (set by RX when 0x4A0 seen)
-    bool           hasUnassignedCSC() const;
-    void           clearUnassignedFlag();
-    const uint8_t* getUnassignedDMC() const;
 
 private:
     bool         running;
@@ -105,44 +55,15 @@ private:
 
     uint32_t     lastChargerSeen;
     float        canCurrentA;
+    bool         externalDeviceSeen;   // latches true on first non-CSC RX frame
 
     I3SlaveData  i3data[I3_MAX_MODS];
 
-    // Accumulator for multi-frame cell sets (used by all CAN variants)
+    // Accumulator for multi-frame i3 cell sets
     struct I3CellAcc {
         float   cells[12];
-        uint8_t framesRx;   // bitmask: bits 0-3 = sub-frame groups received
+        uint8_t framesRx;   // bitmask bits 0/1/2 = sub-frame 0/1/2 received
     } i3acc[I3_MAX_MODS];
 
-    // BMW PHEV staging data (index 0 unused; valid 1..PHEV_MAX_MODS)
-    PhevSlaveData phevData[PHEV_MAX_MODS + 1];
-    struct PhevCellAcc {
-        float   cells[16];
-        uint8_t framesRx;   // bitmask: bits 0-5 = 6 sub-frame groups received
-    } phevAcc[PHEV_MAX_MODS + 1];
-
-    // PHEV command sequencer state
-    uint8_t  phevNextMod;    // 0..PHEV_MAX_MODS-1, rotating module to poll
-    uint8_t  phevMesCycle;   // 0x00..0x0F, wraps at 0x10
-    uint8_t  phevTestCycle;  // 0..4, ramps to enable measurements
-
     static void rxTaskFn(void *param);
-
-    // Mini-E command sequencer state
-    uint8_t  miniE_nextmes;    // 0x00..0x0B, wraps at 0x0C
-    uint8_t  miniE_mescycle;   // 0x00..0x0F, wraps at 0x10
-    uint8_t  miniE_testcycle;  // 0..4, ramps to enable measurements
-
-    // Mini-E / BMWI3BUS CRC8 helper
-    uint8_t  cscChecksum(uint32_t msgId, const uint8_t *buf,
-                         uint8_t len, uint8_t slotIdx);
-
-    // BMWI3BUS command cycle counter
-    // 0-3 = init sequence (hardcoded D4/counter values)
-    // 4+  = steady state (D4=0x50, counter increments 0x10 per burst)
-    uint16_t bmwI3Bus_counter;
-
-    // Standard i3 enumeration state
-    bool    unassignedSeen;
-    uint8_t unassignedDMC[8];
 };
