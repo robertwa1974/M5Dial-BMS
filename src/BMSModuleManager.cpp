@@ -455,15 +455,22 @@ float BMSModuleManager::getAvgTemperature()
     int   validModules = 0;
     for (int x = 1; x <= MAX_MODULE_ADDR; x++)
     {
-        if (modules[x].isExisting() && modules[x].getAvgTemp() > settings.IgnoreTempThresh)
+        if (!modules[x].isExisting()) continue;
+        float t = modules[x].getAvgTemp();
+        // getAvgTemp() returns -100.0 when no sensors pass IgnoreTempThresh.
+        // Also guard against 0.0 which passes the > -70 check but is not valid.
+        if (t > settings.IgnoreTempThresh && t != 0.0f)
         {
-            avg += modules[x].getAvgTemp();
+            avg += t;
             validModules++;
         }
     }
     if (validModules == 0) return 0.0f;
     return avg / (float)validModules;
 }
+
+float BMSModuleManager::getHighTemperature() { return highestPackTemp; }
+float BMSModuleManager::getLowTemperature()  { return lowestPackTemp;  }
 
 float BMSModuleManager::getAvgCellVolt()
 {
@@ -674,15 +681,13 @@ void BMSModuleManager::getAllVoltTempFromCAN()
 // ---------------------------------------------------------------------------
 // getAllVoltTempFromPHEV - populate BMSModule objects from BMW PHEV CAN data
 // Called instead of UART getAllVoltTemp() when cmuType == CMU_BMW_PHEV.
-// Modules are polled by sendPhevCommand() in main loop; data staged in
-// CANManager::phevData[]. Up to PHEV_MAX_MODS (6) modules supported.
 // ---------------------------------------------------------------------------
 void BMSModuleManager::getAllVoltTempFromPHEV()
 {
-    packVolt       = 0.0f;
+    packVolt        = 0.0f;
     numFoundModules = 0;
 
-    for (int x = 1; x <= PHEV_MAX_MODS; x++) {
+    for (int x = 1; x <= BMW_PHEV_MAX_MODS; x++) {
         PhevSlaveData d;
         if (!can.getPhevSlaveData(x, d)) continue;
 
@@ -691,15 +696,14 @@ void BMSModuleManager::getAllVoltTempFromPHEV()
         if (!alive) continue;
 
         numFoundModules++;
-
         modules[x].setNumCells(BMW_PHEV_CELLS_PER_MOD);
+
         float modV = 0.0f;
         for (int c = 0; c < BMW_PHEV_CELLS_PER_MOD; c++) {
             modules[x].setCellVoltage(c, d.cellV[c]);
             modV += d.cellV[c];
         }
         modules[x].setModuleVoltage(modV);
-        // PHEV has 4 temperature sensors; map first two into the standard slots
         modules[x].setTemperature(0, d.temp[0]);
         modules[x].setTemperature(1, d.temp[1]);
         modules[x].setFaults(d.errorWord > 0 ? 1 : 0);

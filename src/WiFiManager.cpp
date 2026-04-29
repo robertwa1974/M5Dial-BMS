@@ -82,40 +82,6 @@ static String decodeCAN(uint32_t id, uint8_t *d)
             snprintf(buf,sizeof(buf),"Chem:%.2s HW:%d.%d FW:%d.%d",(char*)d,d[3],d[2],d[5],d[4]);
             return buf;
         default:
-            // BMWI3BUS / Mini-E TX keepalive frames
-            if (id >= 0x080 && id <= 0x087) {
-                snprintf(buf, sizeof(buf), "CSC cmd slot%d", (int)(id & 0x0F));
-                return buf;
-            }
-            if (id >= 0x088 && id <= 0x08B) {
-                snprintf(buf, sizeof(buf), "MiniE cmd idx%d", (int)(id & 0x0F));
-                return buf;
-            }
-            // BMWI3BUS / Mini-E cell voltages
-            if (id >= 0x100 && id <= 0x15F) {
-                int slot = id & 0x0F;
-                int grp  = (int)((id & 0x0F0) >> 4) - 2;
-                snprintf(buf, sizeof(buf), "cells grp%d mod%d", grp, slot);
-                return buf;
-            }
-            // BMWI3BUS / Mini-E temperatures
-            if (id >= 0x170 && id <= 0x17F) {
-                snprintf(buf, sizeof(buf), "temp mod%d", (int)(id & 0x0F));
-                return buf;
-            }
-            // Standard i3 enumeration
-            if (id == 0x4A0) return "i3 CSC unassigned reply";
-            if (id == 0x0A0) return "i3 CSC mgmt cmd";
-            if (id == 0x0B0) return "i3 bal reset";
-            // Standard i3 cell/temp frames
-            if (id >= 0x3D1 && id <= 0x3D8) {
-                snprintf(buf, sizeof(buf), "i3 cells mod%d", (int)(id - 0x3D0));
-                return buf;
-            }
-            if (id >= 0x3B1 && id <= 0x3B8) {
-                snprintf(buf, sizeof(buf), "i3 temp mod%d", (int)(id - 0x3B0));
-                return buf;
-            }
             return "";
     }
 }
@@ -131,7 +97,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TeslaBMS</title>
+<title>M5DialBMS</title>
 <style>
 :root{--ok:#22c55e;--warn:#f59e0b;--err:#ef4444;--bg:#0f172a;--card:#1e293b;--text:#f1f5f9;--sub:#94a3b8;--border:#334155}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -206,7 +172,7 @@ h1{text-align:center;font-size:1.3rem;padding:1rem;color:var(--ok)}
 </style>
 </head>
 <body>
-<h1>&#9889; TeslaBMS Dashboard</h1>
+<h1>&#9889; M5DialBMS Dashboard</h1>
 <div class="tabs">
   <div class="tab active" onclick="switchTab('pack')">Pack &amp; Modules</div>
   <div class="tab" onclick="switchTab('can')">CAN Feed</div>
@@ -259,7 +225,7 @@ let activeTab='pack';
 const FIELDS=[
   // group header acts as separator
   ['__g','Pack Topology'],
-  ['numCells',   'Cells per module',    'int',   1,  6, 1],
+  ['numCells',   'Cells per module',    'int',   1, 16, 1],
   ['numSeries',  'Modules in series',   'int',   1, 62, 1],
   ['numParallel','Modules in parallel', 'int',   1, 10, 1],
   ['socLo_V',    'SoC 0% V/module',     'float', 10,30,0.1],
@@ -433,32 +399,39 @@ function renderSettingsForm(){
   }
   if(inGroup) html+='</div></div>';
 
-  // Per-module cell count section - only show modules that exist (have been found)
-  // v6 CMU / inhibit fields
-  const ct=document.getElementById('cmuType');
-  if(ct) ct.value=String(s.cmuType||0);
-  const ci=document.getElementById('canInhibitEnabled');
-  if(ci) ci.value=String(s.canInhibitEnabled?1:0);
-  const chgId=document.getElementById('chargerHeartbeatID');
-  if(chgId) chgId.value='0x'+(s.chargerHeartbeatID||0x305).toString(16).toUpperCase();
+  // CMU / inhibit section
   const mc=s.moduleCells||[];
   const globalCells=s.numCells||6;
-  // Collect which module slots are nonzero-override OR are found modules
-  // We show all slots 1..maxModules that have an override set, plus allow setting any 1..20
   html+=`<div class="sf-group" style="grid-column:span 2">
-  <h3>CMU Type &amp; Balance Inhibit (v6)</h3>
-  <div class=\"row\"><label>CMU Type (reboot)</label><select id=\"cmuType\"><option value=\"0\">Tesla UART</option><option value=\"1\">BMW i3 CAN</option></select></div>
-  <div class=\"row\"><label>Balance Inhibit</label><select id=\"canInhibitEnabled\"><option value=\"0\">GPIO only</option><option value=\"1\">GPIO+CAN charger</option></select></div>
-  <div class=\"row\"><label>Charger HB ID</label><input type=\"text\" id=\"chargerHeartbeatID\" style=\"width:80px\" placeholder=\"0x305\"></div>
-  <div class=\"row\"><label>Charger active</label><span id=\"chargerStatus\" style=\"font-weight:bold\">--</span></div>
-    <h4>Per-Module Cell Count Override</h4>
-    <p style="font-size:.72rem;color:var(--sub);margin-bottom:.7rem">
-      Global default: <strong>${globalCells} cells</strong>
-      (change via &#8220;Cells per module&#8221; field above).
-      Set a module to <strong>0</strong> to inherit the global default.
-      Only modules with an active override are highlighted.
-    </p>
-    <div class="mod-cell-grid" id="modCellGrid">`;
+  <h3>CMU Type &amp; Balance Inhibit</h3>
+  <div class="row"><label>CMU Type (reboot required)</label>
+    <select id="cmuType">
+      <option value="0">0 — Tesla UART (BQ76PL536A)</option>
+      <option value="1">1 — BMW i3 CSC standard</option>
+      <option value="2">2 — BMW i3 CSC bus pack</option>
+      <option value="3">3 — BMW Mini-E CSC</option>
+      <option value="4">4 — BMW PHEV SP06/SP41</option>
+    </select>
+  </div>
+  <div class="row"><label>Balance Inhibit</label>
+    <select id="canInhibitEnabled">
+      <option value="0">GPIO only</option>
+      <option value="1">GPIO + CAN charger heartbeat</option>
+    </select>
+  </div>
+  <div class="row"><label>Charger HB ID</label>
+    <input type="text" id="chargerHeartbeatID" style="width:80px" placeholder="0x305">
+  </div>
+  <div class="row"><label>Charger active</label>
+    <span id="chargerStatus" style="font-weight:bold">--</span>
+  </div>
+  <h4>Per-Module Cell Count Override</h4>
+  <p style="font-size:.72rem;color:var(--sub);margin-bottom:.7rem">
+    Global default: <strong>${globalCells} cells</strong>
+    (change via &#8220;Cells per module&#8221; above).
+    Set to <strong>0</strong> to inherit global default.
+  </p>
+  <div class="mod-cell-grid" id="modCellGrid">`;
   const maxMod=s.maxModules||20;
   for(let i=1;i<=maxMod;i++){
     const ov=mc[i]||0;
@@ -470,12 +443,22 @@ function renderSettingsForm(){
         <option value="4" ${ov===4?'selected':''}>4S</option>
         <option value="5" ${ov===5?'selected':''}>5S</option>
         <option value="6" ${ov===6?'selected':''}>6S</option>
+        <option value="12" ${ov===12?'selected':''}>12S</option>
+        <option value="16" ${ov===16?'selected':''}>16S</option>
       </select>
     </div>`;
   }
   html+='</div></div>';
 
+  // Inject HTML into DOM first, THEN set select values — elements must exist before assignment
   document.getElementById('settForm').innerHTML=html;
+
+  const ct=document.getElementById('cmuType');
+  if(ct) ct.value=String(s.cmuType||0);
+  const ci=document.getElementById('canInhibitEnabled');
+  if(ci) ci.value=String(s.canInhibitEnabled?1:0);
+  const chgId=document.getElementById('chargerHeartbeatID');
+  if(chgId) chgId.value='0x'+(s.chargerHeartbeatID||0x305).toString(16).toUpperCase();
 }
 
 async function applySettings(){
@@ -600,7 +583,7 @@ bool WiFiManager::begin()
             mo["faulted"]   = (realFaults > 0);
             mo["faultCode"] = m.getFaults();
             mo["alertCode"] = m.getAlerts();
-            mo["numCells"]  = bms.getModuleCells(i);  // per-module override or global default
+            mo["numCells"]  = bms.getModuleCells(i);
             mo["t1"]        = serialized(String(m.getTemperature(0), 1));
             mo["t2"]        = serialized(String(m.getTemperature(1), 1));
             JsonArray cells = mo["cells"].to<JsonArray>();
@@ -717,7 +700,7 @@ bool WiFiManager::begin()
             JsonObject j = jdoc.as<JsonObject>();
             bool changed = false;
             // Pack topology
-            if (!j["numCells"].isNull())    { int v=j["numCells"];    if(v>=1&&v<=6)   { settings.numCells=(uint8_t)v;      changed=true; } }
+            if (!j["numCells"].isNull())    { int v=j["numCells"];    if(v>=1&&v<=16)  { settings.numCells=(uint8_t)v;      changed=true; } }
             if (!j["numSeries"].isNull())   { int v=j["numSeries"];   if(v>=1&&v<=62)  { settings.numSeries=(uint8_t)v;     changed=true; } }
             if (!j["numParallel"].isNull()) { int v=j["numParallel"]; if(v>=1&&v<=10)  { settings.numParallel=(uint8_t)v;   changed=true; } }
             if (!j["socLo_V"].isNull())     { float v=j["socLo_V"];   if(v>=10&&v<30)  { settings.socLo=v;                  changed=true; } }
@@ -738,7 +721,7 @@ bool WiFiManager::begin()
             if (!j["batteryID"].isNull())   { int v=j["batteryID"]; if(v>=1&&v<=14) { settings.batteryID=(uint8_t)v; changed=true; } }
             if (!j["logLevel"].isNull())    { int v=j["logLevel"];  if(v>=0&&v<=4)  { settings.logLevel=(uint8_t)v;  changed=true; } }
             // v6: CMU type and balance inhibit
-            if (!j["cmuType"].isNull())          { int v=j["cmuType"]; if(v==0||v==1) { settings.cmuType=(uint8_t)v; changed=true; } }
+            if (!j["cmuType"].isNull())          { int v=j["cmuType"]; if(v>=0&&v<=4) { settings.cmuType=(uint8_t)v; changed=true; } }
             if (!j["canInhibitEnabled"].isNull()) { settings.canInhibitEnabled=(j["canInhibitEnabled"].as<int>()!=0)?1:0; changed=true; }
             if (!j["chargerHeartbeatID"].isNull()) { int v=j["chargerHeartbeatID"]; if(v>0&&v<=0x7FF) { settings.chargerHeartbeatID=(uint32_t)v; changed=true; } }
             // Per-module cell count overrides: array index 1..MAX_MODULE_ADDR
@@ -749,7 +732,7 @@ bool WiFiManager::begin()
                     if (idx <= MAX_MODULE_ADDR) {
                         int cv = v.as<int>();
                         // 0 = inherit global, 4/5/6 = explicit override
-                        if (cv == 0 || (cv >= 4 && cv <= 6)) {
+                        if (cv == 0 || (cv >= 4 && cv <= 16)) {
                             settings.moduleCells[idx] = (uint8_t)cv;
                             changed = true;
                         }

@@ -73,7 +73,7 @@ static struct {
     lv_obj_t *faultBadge;
     lv_obj_t *navLabel;
     int       addr;
-    int       builtCells;   // cell count this page was built for; -1 = never built
+    int       builtCells;   // cell count page was built for; -1 = never built
 } modPage;
 
 // ---------------------------------------------------------------------------
@@ -519,11 +519,13 @@ void Display::updateModulePage(int addr)
 
     int activeCells = bms.getModuleCells(addr);
 
-    // Rebuild the LVGL screen if the address or cell count has changed since
-    // the last build. This handles the common case where CAN data arrives after
-    // the initial build (which defaults to 6 cells) causing wrong layout geometry.
+    // Rebuild if address or cell count changed. CRITICAL: load packPage.screen
+    // before deleting modPage.screen — deleting the currently active LVGL screen
+    // crashes the renderer. packPage is always safe to load as a transient screen.
     if (addr != modPage.addr || activeCells != modPage.builtCells) {
         if (modPage.screen) {
+            lv_scr_load(packPage.screen);   // move away before deleting
+            activeScreen = packPage.screen;
             lv_obj_del(modPage.screen);
             modPage.screen = nullptr;
         }

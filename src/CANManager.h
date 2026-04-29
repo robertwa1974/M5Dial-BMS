@@ -1,28 +1,37 @@
 #pragma once
 // =============================================================================
-// CANManager.h  v6 - SimpBMS-compatible CAN TX + CAN RX
+// CANManager.h  v7 - SimpBMS-compatible CAN TX + CAN RX
 //
-// TX (same as v5): SimpBMS frames 0x351/355/356/35A/35E/35F every 1s
-// RX (new v6):
-//   - FreeRTOS task calls twai_receive() continuously on core 0
-//   - Charger/inverter heartbeat detection -> balance inhibit via CAN
-//   - BMW i3 CSC cell/temp frames decoded into I3SlaveData staging buffer
-//
-// Hardware: SN65HVD230 or MCP2551 on Grove Port B
-//   GPIO1 = CAN TX, GPIO2 = CAN RX
+// TX: SimpBMS frames 0x351/355/356/35A/35E/35F + extended 0x372/373/374
+//     gated on externalDeviceSeen (any non-CSC frame received)
+// RX: FreeRTOS task on core 0 decodes BMW i3/PHEV frames, charger heartbeat
 // =============================================================================
 #include <Arduino.h>
 #include <driver/twai.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-// BMW i3 staging data populated by CAN RX task, read by BMSModuleManager
+// ---------------------------------------------------------------------------
+// BMW i3 / Mini-E / Bus Pack staging data
+// ---------------------------------------------------------------------------
 #define I3_MAX_MODS 9   // index 0 unused; 1..8 = module address
 struct I3SlaveData {
-    float    cellV[12];     // cell voltages in volts
-    float    temp[2];       // temperatures in degC
-    bool     fresh;         // true = new data since last read
-    uint32_t lastSeenMs;    // millis() of last received frame
+    float    cellV[12];
+    float    temp[2];
+    bool     fresh;
+    uint32_t lastSeenMs;
+};
+
+// ---------------------------------------------------------------------------
+// BMW PHEV SP06/SP41 staging data
+// NOTE: PHEV_MAX_MODS and PHEV_CELLS are defined in bms_config.h — not here
+// ---------------------------------------------------------------------------
+struct PhevSlaveData {
+    float    cellV[16];   // 16 cells max
+    float    temp[4];     // 4 temperature sensors
+    uint16_t errorWord;
+    bool     fresh;
+    uint32_t lastSeenMs;
 };
 
 class CANManager {
@@ -36,18 +45,21 @@ public:
     void sendBatterySummary();
     void sendFrame(uint32_t id, uint8_t *data, uint8_t len);
 
-    // RX dispatch called by RX task
+    // RX dispatch
     void processRxFrame(const twai_message_t &msg);
 
-    // Charger/inverter presence
+    // Charger / inverter presence
     bool     getChargerActive();
     float    getCanCurrentA();
-    bool     hasExternalDevice() const;       // true once any non-CSC frame received
-    uint32_t getI3LastSeen(int addr) const;   // lastSeenMs for module addr
+    bool     hasExternalDevice() const;
+    uint32_t getI3LastSeen(int addr) const;
 
-    // BMW i3 slave data access
-    bool  getI3SlaveData(int addr, I3SlaveData &out);
-    void  sendI3WakeFrame();
+    // BMW i3 / Mini-E / Bus Pack slave data
+    bool getI3SlaveData(int addr, I3SlaveData &out);
+    void sendI3WakeFrame();
+
+    // BMW PHEV slave data
+    bool getPhevSlaveData(int slot, PhevSlaveData &out);
 
 private:
     bool         running;
@@ -55,14 +67,14 @@ private:
 
     uint32_t     lastChargerSeen;
     float        canCurrentA;
-    bool         externalDeviceSeen;   // latches true on first non-CSC RX frame
+    bool         externalDeviceSeen;
 
-    I3SlaveData  i3data[I3_MAX_MODS];
+    I3SlaveData   i3data[I3_MAX_MODS];
+    PhevSlaveData phevdata[7];   // slots 1..6; index 0 unused
 
-    // Accumulator for multi-frame i3 cell sets
     struct I3CellAcc {
         float   cells[12];
-        uint8_t framesRx;   // bitmask bits 0/1/2 = sub-frame 0/1/2 received
+        uint8_t framesRx;
     } i3acc[I3_MAX_MODS];
 
     static void rxTaskFn(void *param);

@@ -11,7 +11,7 @@
 
 BMSModule::BMSModule()
 {
-    for (int i = 0; i < 16; i++)
+    for (int i = 0; i < 12; i++)
     {
         cellVolt[i]        = 0.0f;
         lowestCellVolt[i]  = 5.0f;
@@ -251,7 +251,7 @@ float BMSModule::getAvgTemp()
     if (v0 && v1)  return (temperatures[0] + temperatures[1]) / 2.0f;
     if (v0)        return temperatures[0];
     if (v1)        return temperatures[1];
-    return 0.0f;   // no valid sensor — caller's IgnoreTempThresh check will skip this module
+    return -100.0f;   // no valid sensors — guaranteed to fail IgnoreTempThresh check
 }
 
 float BMSModule::getHighestTemp() { return highestTemperature; }
@@ -279,13 +279,13 @@ void BMSModule::setAlerts(uint8_t a)     { alerts = a; }
 
 void BMSModule::settempsensor(int tempsensor) { sensor     = tempsensor; }
 void BMSModule::setIgnoreCell(float Ignore)   { IgnoreCell = Ignore;     }
-void BMSModule::setNumCells(int n)            { if (n >= 1 && n <= 16) numCells = (uint8_t)n; }
+void BMSModule::setNumCells(int n)            { if (n >= 1 && n <= 12) numCells = (uint8_t)n; }
 int  BMSModule::getNumCells() const           { return numCells; }
 
 // Direct cell voltage write — used by CAN-sourced slave types (BMW i3 etc.)
 void BMSModule::setCellVoltage(int cell, float v)
 {
-    if (cell < 0 || cell >= 16) return;
+    if (cell < 0 || cell >= 12) return;
     cellVolt[cell] = v;
     if (v > IgnoreCell) {
         if (v < lowestCellVolt[cell])  lowestCellVolt[cell]  = v;

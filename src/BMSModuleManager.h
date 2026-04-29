@@ -41,6 +41,8 @@ public:
     // Pack-level data
     float getPackVoltage();
     float getAvgTemperature();
+    float getHighTemperature();
+    float getLowTemperature();
     float getAvgCellVolt();
     float getLowCellVolt();
     float getHighCellVolt();
@@ -52,7 +54,6 @@ public:
     int   getModuleCells(int addr);
     // BMW i3 CAN-sourced data path (called instead of UART getAllVoltTemp)
     void  getAllVoltTempFromCAN();
-    // BMW PHEV polled data path
     void  getAllVoltTempFromPHEV();
 
     // Per-module accessor
