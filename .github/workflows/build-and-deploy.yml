@@ -76,17 +76,21 @@ jobs:
       # -----------------------------------------------------------------------
       # 6. Merge all binaries into factory.bin
       #
-      # --flash_mode keep — use whatever mode is baked into each binary.
-      # The ESP32-S3 bootloader is compiled with DIO even when the app uses
-      # QIO; overriding with qio here causes the boot loop we saw in testing.
+      # Offsets for 8MB flash (default_8MB.csv):
+      #   bootloader  0x0000
+      #   partitions  0x8000
+      #   boot_app0   0xe000
+      #   firmware    0x10000
+      # No SPIFFS — all config stored in NVS/EEPROM
+      # flash_mode dio matches Dial Display project — safe for ESP32-S3 merge
       # -----------------------------------------------------------------------
       - name: Merge binaries into factory.bin
         run: |
           esptool.py --chip esp32s3 merge_bin \
             --output factory.bin \
-            --flash_mode keep \
-            --flash_freq keep \
-            --flash_size keep \
+            --flash_mode dio \
+            --flash_freq 80m \
+            --flash_size 8MB \
             0x0000   ${{ env.BOOTLOADER }} \
             0x8000   ${{ env.BUILD_DIR }}/partitions.bin \
             0xe000   ${{ env.BOOT_APP0 }} \
