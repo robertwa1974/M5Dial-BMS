@@ -1,5 +1,5 @@
 // =============================================================================
-// main.cpp - TeslaBMS M5Dial v6
+// main.cpp - M5DialBMS v7
 //
 // New in v6:
 //   - CAN RX (FreeRTOS task in CANManager): charger heartbeat inhibit + i3 decode
@@ -176,7 +176,7 @@ void setup()
     Serial.begin(115200);
     uint32_t t0 = millis();
     while (!Serial && (millis() - t0) < 3000) delay(10);
-    Logger::console("TeslaBMS M5Dial v6 booting...");
+    Logger::console("M5DialBMS M5Dial v7 booting...");
 
     // 7. CMU UART (Tesla mode only)
     if (true) {  // Always init UART - needed for Tesla mode; harmless for i3
@@ -361,7 +361,7 @@ void loadSettings()
         settings.socLo       = DEFAULT_SOC_LO;
         settings.socHi       = DEFAULT_SOC_HI;
         memset(settings.moduleCells, 0, sizeof(settings.moduleCells));
-        // v6 new defaults
+        // v7 new defaults
         settings.cmuType            = CMU_TESLA;
         settings.canInhibitEnabled  = DEFAULT_CAN_INHIBIT;
         settings.chargerHeartbeatID = DEFAULT_CHARGER_HB_ID;
