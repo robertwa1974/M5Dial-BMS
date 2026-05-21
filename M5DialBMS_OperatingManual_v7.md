@@ -34,9 +34,9 @@ M5DialBMS is a battery management monitor and controller running on the M5Stack 
 | Cells per module | 4–6 Tesla · 12 BMW i3/Mini-E/Bus Pack · 16 BMW PHEV |
 | Display | 240×240 GC9A01 round, LVGL 8.x |
 | CAN | SimpBMS-compatible TX + RX (Grove B + transceiver) |
-| WiFi | Access Point mode, dashboard at 192.168.4.1 |
+| WiFi | Access Point mode — SSID `M5DialBMS`, dashboard at 192.168.4.1, SavvyCAN at port 23 |
 | Active balancing | Tesla UART mode only; inhibited in drive mode |
-| EEPROM version | 0x18 (v7) — auto-resets to defaults on mismatch |
+| EEPROM version | 0x19 (v7) — auto-resets to defaults on mismatch |
 
 ---
 
@@ -265,8 +265,8 @@ Long-press the encoder button (≥ 1 second) to toggle WiFi on/off. The Settings
 
 WiFi operates in Access Point mode.
 
-- **SSID:** `TeslaBMS`
-- **Password:** `teslapack`
+- **SSID:** `M5DialBMS`
+- **Password:** `M5DialBMS`
 - **URL:** `http://192.168.4.1`
 
 WiFi can be enabled at boot (Settings tab or `WIFI=1` serial command) or toggled at runtime with a long encoder press.
@@ -301,6 +301,21 @@ All thresholds, CMU type selection, CAN inhibit mode, charger heartbeat ID, per-
 | Balance Inhibit | `GPIO only` or `GPIO + CAN charger heartbeat` |
 | Charger HB ID | CAN ID to watch for charger presence (default 0x305) |
 | Per-module cell count | Override global default for individual module slots (0 = inherit global) |
+
+---
+
+### 6.4 SavvyCAN / GVRET Integration
+
+When WiFi is active, a GVRET-compatible TCP server runs on port 23. This allows SavvyCAN to connect and see all live CAN traffic — both frames received from CMU modules and frames transmitted by the BMS (SimpBMS outputs, BMW keepalives, etc.).
+
+**To connect SavvyCAN:**
+
+1. Connect your laptop to the `M5DialBMS` WiFi network
+2. Open SavvyCAN → Connections → Add Network Connection
+3. Host: `192.168.4.1` · Port: `23` · Device type: `GVRET (ESP32)`
+4. Click Connect — frames will appear immediately
+
+The GVRET server starts and stops automatically with WiFi. No separate toggle is needed. Only one SavvyCAN client can be connected at a time.
 
 ---
 
@@ -464,32 +479,53 @@ BMW CSC modules do not expose a fault register over CAN. Fault detection is:
 
 ## 11. Building and Flashing
 
-### 11.1 Requirements
+### 11.1 Option A — Web Installer (recommended for most users)
 
-- Visual Studio Code with the PlatformIO IDE extension
-- USB-C cable (data-capable)
+Flash directly from your browser — no tools, no file downloads required.
 
-### 11.2 Steps
+1. Visit **[https://robertwa1974.github.io/M5Dial-BMS](https://robertwa1974.github.io/M5Dial-BMS)** in Chrome or Edge
+2. Connect the M5Dial via USB-C
+3. Click **Install** and select the M5Dial COM port when prompted
+4. Wait ~60 seconds for flashing to complete — the device reboots automatically
 
-1. Open the `TeslaBMS_M5Dial` folder in VS Code.
-2. PlatformIO auto-detects `platformio.ini` and downloads the ESP32-S3 toolchain and libraries.
-3. Edit `src/bms_config.h` to change `BMS_NUM_SERIES` or `BMS_NUM_PARALLEL` before first flash if needed.
-4. Click **Build** (✓) to verify compilation.
-5. Click **Upload** (→) to flash. Hold the M5Dial power button if needed to enter download mode.
-6. Open the serial monitor at 115200 baud to view boot logs and enter commands.
+> **Pack configuration** — all settings (CMU type, cell count, series/parallel, voltage thresholds, SoC calibration) are done via the web dashboard after flashing. No source code edits are required.
 
-> **Note:** EEPROM version is 0x18. Upgrading from v6 firmware (EEPROM 0x17) will trigger a one-time reset of all settings to defaults on first boot. Re-enter your settings after the upgrade.
+> **Browser note:** Firefox and Safari do not support Web Serial. Use Chrome or Edge. If the installer page is unavailable, fall back to Option A(b) below.
+
+### 11.1b Option A(b) — Manual Binary Flash (fallback)
+
+If the web installer is unavailable, flash manually using esptool-js:
+
+1. Download `factory.bin` from the [Releases page](https://github.com/robertwa1974/M5Dial-BMS/releases)
+2. Visit **[https://espressif.github.io/esptool-js/](https://espressif.github.io/esptool-js/)** in Chrome or Edge
+3. Connect the M5Dial via USB-C, set baud **921600**, click **Connect**
+4. Set flash address to **0x0**, select `factory.bin`, click **Program**
+
+### 11.2 Option B — Build from Source
+
+Required only if you need to modify the firmware.
+
+1. Install Visual Studio Code with the PlatformIO IDE extension
+2. Clone or download the repository and open the `M5Dial-BMS` folder in VS Code
+3. PlatformIO auto-detects `platformio.ini` and downloads the ESP32-S3 toolchain. M5GFX and M5Unified are vendored in `lib/` — no registry issues.
+4. Click **Build** (✓) to verify compilation
+5. Click **Upload** (→) to flash via USB-C. Hold the M5Dial power button if needed to enter download mode.
+6. Open the serial monitor at 115200 baud to view boot logs
+
+> **Note:** EEPROM version is 0x19. Upgrading from earlier firmware will trigger a one-time reset of all settings to defaults on first boot. Re-enter your settings via the web dashboard after upgrading.
 
 ### 11.3 Library Dependencies
 
-| Library | Version |
-|---|---|
-| m5stack/M5Unified | ^0.2.4 |
-| m5stack/M5GFX | ^0.2.4 |
-| lvgl/lvgl | ^8.4.0 |
-| esphome/AsyncTCP-esphome | ^2.1.4 |
-| esphome/ESPAsyncWebServer-esphome | ^3.3.0 |
-| bblanchon/ArduinoJson | ^7.3.1 |
+M5GFX and M5Unified are **vendored** in `lib/M5GFX/` and `lib/M5Unified/` respectively and are not fetched from the registry. All other libraries are pinned to exact versions in `platformio.ini`.
+
+| Library | Version | Source |
+|---|---|---|
+| m5stack/M5GFX | 0.2.6 | Vendored in `lib/` |
+| m5stack/M5Unified | 0.2.5 | Vendored in `lib/` |
+| lvgl/lvgl | 8.4.0 | PlatformIO registry |
+| esphome/AsyncTCP-esphome | 2.1.4 | PlatformIO registry |
+| esphome/ESPAsyncWebServer-esphome | 3.3.0 | PlatformIO registry |
+| bblanchon/ArduinoJson | 7.3.1 | PlatformIO registry |
 
 ---
 
@@ -510,4 +546,4 @@ BMW CSC modules do not expose a fault register over CAN. Fault detection is:
 
 ---
 
-*TeslaBMS M5Dial — Operating Manual v7 · EEPROM 0x18 · April 2026*
+*M5DialBMS — Operating Manual v7 · EEPROM 0x19 · May 2026*

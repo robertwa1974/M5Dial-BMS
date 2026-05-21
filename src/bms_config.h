@@ -60,8 +60,8 @@
 // ---------------------------------------------------------------------------
 // WiFi credentials - change before flashing or use WIFI=SSID:PASS serial cmd
 // ---------------------------------------------------------------------------
-#define WIFI_SSID_DEFAULT       "TeslaBMS"
-#define WIFI_PASS_DEFAULT       "teslapack"
+#define WIFI_SSID_DEFAULT       "M5DialBMS"
+#define WIFI_PASS_DEFAULT       "M5DialBMS"
 #define WIFI_AP_MODE            true   // true=access point, false=station mode
 
 // ---------------------------------------------------------------------------
@@ -217,7 +217,7 @@ enum CmuType : uint8_t {
 // EEPROM / NVS settings
 // Bump EEPROM_VERSION whenever EEPROMSettings layout changes
 // ---------------------------------------------------------------------------
-#define EEPROM_VERSION      0x18    // v7: 5-way cmuType (Tesla/i3/i3bus/MiniE/PHEV)
+#define EEPROM_VERSION      0x19    // v7: 5-way cmuType (Tesla/i3/i3bus/MiniE/PHEV)
 #define EEPROM_PAGE         0
 
 #define DEFAULT_OVER_V          4.20f

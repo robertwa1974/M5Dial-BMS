@@ -1,6 +1,6 @@
 # TeslaBMS M5Dial v6
 
-ESP32-S3 battery management system display/controller for Tesla Model S/X battery modules and BMW i3 CSC modules, running on the M5Dial (240×240 round display, rotary encoder).
+ESP32-S3 battery management system display/controller for Tesla Model S/X battery modules and BMW i3 CSC and PHEV modules, running on the M5Dial (240×240 round display, rotary encoder).
 
 ## v6 New Features (over v5.2)
 

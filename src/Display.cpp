@@ -1,5 +1,6 @@
 // =============================================================================
-// Display.cpp  v6 - LVGL display manager for TeslaBMS M5Dial
+// Display.cpp  v7 - LVGL display manager for TeslaBMS M5Dial
+// Uses LVGL 8.4 with M5GFX 0.2.4 (pinned to avoid M5GFX bundled LVGL9 conflict)
 //
 // Changes from v5:
 //   - Module page: larger fonts (montserrat_20 cell voltages, montserrat_16 labels)
@@ -73,7 +74,6 @@ static struct {
     lv_obj_t *faultBadge;
     lv_obj_t *navLabel;
     int       addr;
-    int       builtCells;   // cell count page was built for; -1 = never built
 } modPage;
 
 // ---------------------------------------------------------------------------
@@ -168,7 +168,6 @@ bool Display::begin()
     lv_obj_add_style(defScr, &styleBg, 0);
     lv_obj_set_style_bg_color(defScr, lv_color_hex(0x0F172A), 0);
 
-    modPage.builtCells = -1;   // force rebuild on first real navigation
     buildPackPage();
     buildModulePage(1);
     buildSettingsPage();
@@ -417,9 +416,8 @@ void Display::buildModulePage(int addr)
     lv_label_set_text(nav, "Rot=nav  Btn=pack");
     modPage.navLabel = nav;
 
-    modPage.screen     = scr;
-    modPage.addr       = addr;
-    modPage.builtCells = activeCells;
+    modPage.screen = scr;
+    modPage.addr   = addr;
 }
 
 // ---------------------------------------------------------------------------
@@ -517,26 +515,13 @@ void Display::updateModulePage(int addr)
     BMSModule &mod = bms.getModule(addr);
     if (!mod.isExisting()) { setPage(0); return; }
 
-    int activeCells = bms.getModuleCells(addr);
-
-    // Rebuild if address or cell count changed. CRITICAL: load packPage.screen
-    // before deleting modPage.screen — deleting the currently active LVGL screen
-    // crashes the renderer. packPage is always safe to load as a transient screen.
-    if (addr != modPage.addr || activeCells != modPage.builtCells) {
-        if (modPage.screen) {
-            lv_scr_load(packPage.screen);   // move away before deleting
-            activeScreen = packPage.screen;
-            lv_obj_del(modPage.screen);
-            modPage.screen = nullptr;
-        }
-        buildModulePage(addr);
-    }
-
     modPage.addr = addr;
 
     char buf[48];
     snprintf(buf, sizeof(buf), "Mod#%d  %.2fV", addr, mod.getModuleVoltage());
     lv_label_set_text(modPage.titleLabel, buf);
+
+    int activeCells = bms.getModuleCells(addr);
 
     for (int i = 0; i < MAX_CELLS_DISPLAY; i++) {
         if (i >= activeCells) {

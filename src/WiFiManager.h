@@ -3,6 +3,7 @@
 // WiFiManager.h - WiFi AP + async HTTP server for web dashboard
 // =============================================================================
 #include <Arduino.h>
+#include <WiFi.h>
 
 // Free function - call from CANManager::sendFrame() to populate the rolling
 // CAN log buffer served at /api/can.  Safe to call even when WiFi is off.
@@ -17,7 +18,16 @@ public:
     void loop();                // call from main loop for housekeeping
     String getIP();
 
+    // Called from wifiLogCAN() — public so the free function can reach it
+    void gvretPushFrame(uint32_t id, uint8_t *data, uint8_t len, bool extended);
+
 private:
     bool running;
     String ipAddr;
+
+    // GVRET/SavvyCAN TCP server on port 23
+    WiFiServer  gvretServer;
+    WiFiClient  gvretClient;
+    bool        gvretClientConnected;
+    void        gvretLoop();
 };

@@ -2,6 +2,27 @@
 
 ---
 
+## v7-beta3 — May 2026
+
+### New Features
+- **GVRET/SavvyCAN integration** — TCP server on port 23 streams all CAN frames in GVRET binary protocol. Connect SavvyCAN to `192.168.4.1:23` with device type `GVRET (ESP32)` whenever WiFi is active. No separate toggle required — GVRET starts and stops with WiFi.
+- **WiFi credentials updated** — default SSID and password changed from `TeslaBMS` / `teslapack` to `M5DialBMS` / `M5DialBMS`.
+
+### Build System
+- **M5GFX and M5Unified vendored** into `lib/M5GFX/` and `lib/M5Unified/` (v0.2.6 and v0.2.5 respectively). This permanently resolves the LVGL collision that prevented fresh builds on external testers' machines. Libraries are now committed to the repository and PlatformIO no longer fetches them from the registry.
+- **Platform pinned** — `espressif32 @ 6.10.0` in `platformio.ini` ensures reproducible builds. Removed `ARDUINO_RUNNING_CORE` and `ARDUINO_EVENT_RUNNING_CORE` build flags that conflicted with this platform version.
+- **All other lib_deps pinned** — `AsyncTCP-esphome @ 2.1.4`, `ESPAsyncWebServer-esphome @ 3.3.0`, `ArduinoJson @ 7.3.1`, `lvgl @ 8.4.0`.
+
+### Web Installer
+- **GitHub Actions CI/CD** — `.github/workflows/build-and-deploy.yml` added. On every tagged release (`git tag vX.Y.Z`), the workflow builds firmware, merges bootloader + partitions + firmware into a single `factory.bin`, and deploys it to GitHub Pages automatically.
+- **Web installer** live at `https://robertwa1974.github.io/M5Dial-BMS` — one-click flash from Chrome or Edge, no tools required.
+- `docs/index.html` and `docs/manifest.json` added to repository.
+
+### EEPROM
+- Version bumped `0x18` → `0x19` to force SSID/password defaults reset on upgrade from v7-beta2
+
+---
+
 ## v7-beta2 — April 2026
 
 ### New Features
