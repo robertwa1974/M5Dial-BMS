@@ -90,6 +90,58 @@ Required for CAN output (SimpBMS frames) and all BMW CAN modes.
 
 The CAN transceiver also connects to the BMW module's CAN-H and CAN-L bus wires via its screw terminals.
 
+### 2.5 BMW Module Power Supply Requirements
+
+> ⚠️ **Read before powering. Applying 12V to a 5V module will permanently destroy it.**
+
+All BMW CSC variants supported by this firmware (i3, Mini-E, PHEV) require a **separate 5V low-voltage supply** in addition to the cell stack connections. The modules do not power themselves from the cells — they need external 5V, GND, CAN-H, and CAN-L via a dedicated low-voltage connector.
+
+**In the original vehicle** this 5V is supplied by the BMW BMS master module through the wiring harness. In a DIY reuse scenario, the original blue connector on the battery master module carries this supply — or it must be provided from an external 5V regulator.
+
+#### BMW i3 CSC (CMUTYPE 1, 2, 3)
+
+The i3 CSC slave modules connect via a daisy-chained harness. Per the SimpBMS documentation, the required connections are:
+
+| Signal | Note |
+|---|---|
+| 5V | Powers the CSC module — **5V only, not 12V** |
+| GND | Common ground with CAN transceiver |
+| CAN-H | To CAN transceiver CAN-H terminal |
+| CAN-L | To CAN transceiver CAN-L terminal |
+
+The connections are chained from one module to the next. If a module is removed from the chain, the pins in that plug must be jumpered to pass 5V, GND, and CAN through to downstream modules.
+
+Refer to the SimpBMS slave connection diagram at **https://www.simpbms.com** for the exact connector pinout and wire colours for your specific harness.
+
+#### BMW PHEV SP06/SP41 (CMUTYPE 4)
+
+Per the openinverter wiki (https://openinverter.org/wiki/BMW_Hybrid_Battery_Pack), the blue connector on the battery master module carries the slave supply. Two generations exist:
+
+**Gen 1 Blue Plug (12-pin):**
+
+| Pin | Function |
+|---|---|
+| 1 | CAN-H |
+| 2 | CAN-L |
+| 5 | 5V — apply here to power slave modules |
+| 6 | GND |
+| 7 | CAN-H (daisy chain out) |
+| 8 | CAN-L (daisy chain out) |
+| 11 | 5V (daisy chain out) |
+| 12 | GND |
+
+**Gen 2 Blue Plug (12-pin):**
+
+| Pin | Function |
+|---|---|
+| 1 | CAN-L |
+| 2 | CAN-H |
+| 4 | Interlock (5V when all modules connected, float otherwise) |
+| 5 | 5V — apply here to power slave modules |
+| 6 | GND |
+
+> **Note:** The original BMW BMS master module must be **unplugged** (blue plug removed) before connecting your own 5V supply and CAN wiring. The blue plug is then used as the connection point for M5DialBMS.
+
 ---
 
 ## 3. CMU Mode Selection
