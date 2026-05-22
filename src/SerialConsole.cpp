@@ -42,7 +42,7 @@ void SerialConsole::loop() {
 // printMenu - shows all commands WITH their current values
 // ---------------------------------------------------------------------------
 void SerialConsole::printMenu() {
-    Logger::console("\n========== TeslaBMS M5Dial v5 - MENU ==========");
+    Logger::console("\n========== M5DialBMS v7 - MENU ==========");
     Logger::console("Line ending required (LF, CR, or CRLF)\n");
 
     Logger::console("--- Pack Actions ---");
@@ -58,7 +58,7 @@ void SerialConsole::printMenu() {
     Logger::console("  X          Stop WiFi and CAN\n");
 
     Logger::console("--- Pack Configuration ---");
-    Logger::console("  NUMCELLS=N       Cells per module [%d]  (4, 5, or 6)",
+    Logger::console("  NUMCELLS=N       Cells per module [%d]  (4-16)",
                     settings.numCells);
     Logger::console("  NUMSERIES=N      Modules in series [%d]",
                     settings.numSeries);
@@ -101,8 +101,9 @@ void SerialConsole::printMenu() {
                     settings.batteryID);
     Logger::console("  LOGLEVEL=N       0=debug 1=info 2=warn 3=error 4=off [%d]",
                     settings.logLevel);
-    Logger::console("\n--- v6: CMU Type & CAN Inhibit ---");
-    Logger::console("  CMUTYPE=0/1      0=Tesla UART, 1=BMW i3 CAN [%d] (reboot)",
+    Logger::console("\n--- v7: CMU Type & CAN Inhibit ---");
+    Logger::console("  CMUTYPE=0-4      0=Tesla UART, 1=BMW i3, 2=BMW i3 Bus,");
+    Logger::console("                   3=BMW Mini-E, 4=BMW PHEV [%d] (reboot)",
                     settings.cmuType);
     Logger::console("  CANINHIBIT=0/1   CAN-based balance inhibit [%s]",
                     settings.canInhibitEnabled ? "ON" : "OFF");
@@ -348,12 +349,18 @@ void SerialConsole::handleConfigCmd() {
     }
     // --- v6: CMU type ---
     else if (cmdString == "CMUTYPE") {
-        if (newValue == 0 || newValue == 1) {
+        if (newValue >= 0 && newValue <= 4) {
             settings.cmuType = (uint8_t)newValue;
             needEEPROMWrite = true;
-            Logger::console("CMU type: %s  (reboot required)",
-                            newValue == 0 ? "Tesla UART" : "BMW i3 CAN");
-        } else Logger::console("Invalid (0=Tesla, 1=BMW i3)");
+            const char *cmuNames[] = {
+                "Tesla UART",
+                "BMW i3 CAN",
+                "BMW i3 Bus Pack",
+                "BMW Mini-E",
+                "BMW PHEV SP06/SP41"
+            };
+            Logger::console("CMU type: %s  (reboot required)", cmuNames[newValue]);
+        } else Logger::console("Invalid (0=Tesla, 1=BMW i3, 2=BMW i3 Bus, 3=BMW Mini-E, 4=BMW PHEV)");
     }
     // --- v6: CAN-based balance inhibit ---
     else if (cmdString == "CANINHIBIT") {

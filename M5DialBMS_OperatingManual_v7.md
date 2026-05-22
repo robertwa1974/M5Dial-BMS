@@ -412,17 +412,16 @@ PlatformIO: `pio device monitor`
 
 | Key | Action |
 |---|---|
-| `H` or `?` | Print help menu |
+| `H` or `?` | Print help menu with current values |
 | `S` | Sleep all CMU boards (Tesla only) |
 | `W` | Wake all CMU boards (Tesla only) |
 | `C` | Clear all faults on all boards |
 | `F` | Re-scan for connected boards |
 | `R` | Renumber boards from address 1 (Tesla only) |
 | `B` | Trigger one cell balancing cycle |
-| `E` | Find unassigned BMW i3 standard CSC module |
-| `A` | Assign found BMW i3 standard CSC module to next slot |
 | `p` | Toggle pack summary printout (3-second interval) |
 | `d` | Toggle pack detail printout (3-second interval) |
+| `X` | Stop WiFi and CAN |
 
 ### 9.3 Configuration Commands (KEY=value + Enter)
 
@@ -434,10 +433,12 @@ All settings are saved to flash automatically after each valid command.
 | `VOLTLIMLO=3.00` | 0.0–6.0 V | Undervoltage threshold per cell |
 | `IGNORECELL=2.50` | 0.0–3.0 V | Ignore cells below this voltage (2.5V for unpopulated inputs) |
 | `TEMPLIMHI=55.0` | 0–100 °C | Over-temperature threshold |
-| `TEMPLIMLO=-10.0` | -40–30 °C | Under-temperature threshold |
+| `TEMPLIMLO=-10.0` | -60–50 °C | Under-temperature threshold |
+| `IGNORETEMP=-100.0` | -100–0 °C | Ignore temperature sensors below this value |
 | `BALVOLT=4.10` | 0.0–6.0 V | Balance target voltage per cell |
 | `BALHYST=0.04` | 0.0–1.0 V | Hysteresis below BALVOLT |
 | `AUTOBAL=1` | 0 or 1 | Enable/disable automatic balancing |
+| `DRIVEPIN=1` | 0 or 1 | Manual balance inhibit (runtime only, not saved) |
 | `NUMCELLS=6` | 1–16 | Global default cells per module |
 | `NUMSERIES=8` | 1–62 | Modules in series |
 | `NUMPARALLEL=1` | 1–10 | Modules in parallel |
@@ -445,7 +446,7 @@ All settings are saved to flash automatically after each valid command.
 | `SOCHI=25.2` | V/module | Voltage at 100% SoC |
 | `WIFI=1` | 0 or 1 | Enable WiFi on next boot |
 | `LOGLEVEL=1` | 0–4 | 0=Debug 1=Info 2=Warn 3=Error 4=Off |
-| `CMUTYPE=0` | 0–4 | CMU type (reboot required after change) |
+| `CMUTYPE=0` | 0–4 | 0=Tesla 1=BMW i3 2=BMW i3 Bus 3=BMW Mini-E 4=BMW PHEV (reboot required) |
 | `CANINHIBIT=1` | 0 or 1 | Enable CAN charger heartbeat balance inhibit |
 | `CHGID=0x305` | 0x001–0x7FF | CAN ID to watch for charger heartbeat |
 | `BATTERYID=1` | 1–14 | Battery ID in SimpBMS CAN frames |
