@@ -148,37 +148,43 @@ static void toggleWifi()
 // =============================================================================
 void setup()
 {
-    // 1. Power hold MUST be first
+    // 1. M5Dial init FIRST — matches Dial Display Hardware::init() sequence
+    //    Power hold AFTER M5.begin() — AXP2101 must init before GPIO46 is driven
+    auto cfg = M5.config();
+    M5.begin(cfg);
+
+    // 2. Power hold AFTER M5.begin()
     pinMode(PIN_POWER_HOLD, OUTPUT);
     digitalWrite(PIN_POWER_HOLD, HIGH);
 
-    // 2. M5Dial init
-    auto cfg = M5.config();
-    M5.begin(cfg);
+    // 3. Display config — match Dial Display exactly
     M5.Display.setRotation(0);
     M5.Display.setBrightness(180);
+    M5.Display.setColorDepth(16);
+    M5.Display.setSwapBytes(false);
+    M5.Display.fillScreen(TFT_BLACK);
 
-    // 3. LVGL display
+    // 4. LVGL display
     display.begin();
     display.showStartup("Booting...");
 
-    // 4. Encoder
+    // 5. Encoder
     pinMode(ENC_A_PIN,   INPUT_PULLUP);
     pinMode(ENC_B_PIN,   INPUT_PULLUP);
     pinMode(ENC_BTN_PIN, INPUT_PULLUP);
     lastEncA     = digitalRead(ENC_A_PIN);
     lastBtnState = (digitalRead(ENC_BTN_PIN) == LOW);
 
-    // 5. Drive inhibit GPIO
+    // 6. Drive inhibit GPIO
     pinMode(PIN_DRIVE_INHIBIT, INPUT_PULLDOWN);
 
-    // 6. USB console
+    // 7. USB console
     Serial.begin(115200);
     uint32_t t0 = millis();
     while (!Serial && (millis() - t0) < 3000) delay(10);
-    Logger::console("M5DialBMS M5Dial v7 booting...");
+    Logger::console("M5DialBMS v7 booting...");
 
-    // 7. CMU UART (Tesla mode only)
+    // 8. CMU UART (Tesla mode only)
     if (true) {  // Always init UART - needed for Tesla mode; harmless for i3
         SERIALBMS.begin(BMS_BAUD_RATE, SERIAL_8N1, BMS_SERIAL_RX_PIN, BMS_SERIAL_TX_PIN);
         delay(50);
@@ -187,12 +193,12 @@ void setup()
                         BMS_BAUD_RATE, BMS_SERIAL_RX_PIN, BMS_SERIAL_TX_PIN);
     }
 
-    // 8. EEPROM / settings
+    // 9. EEPROM / settings
     EEPROM.begin(sizeof(EEPROMSettings));
     loadSettings();
     applySettings();
 
-    // 9. BMS enumeration - path depends on CMU type
+    // 10. BMS enumeration - path depends on CMU type
     if (settings.cmuType == CMU_TESLA) {
         display.showStartup("Waking CMUs...");
         Logger::console("Tesla UART mode: waking and numbering CMUs...");
@@ -214,14 +220,14 @@ void setup()
     Logger::console("Ready. Mode: %s, %d module(s) found so far.",
                     settings.cmuType == CMU_TESLA ? "Tesla UART" : "BMW i3 CAN", n);
 
-    // 10. WiFi (if enabled at boot)
+    // 11. WiFi (if enabled at boot)
     if (settings.wifiEnabled) {
         display.showStartup("Starting WiFi...");
         wifi.begin();
         wifiDisplayIP = wifi.getIP();
     }
 
-    // 11. CAN (always attempt - RX task starts inside begin())
+    // 12. CAN (always attempt - RX task starts inside begin())
     display.showStartup("Starting CAN...");
     if (can.begin()) {
         Logger::console("CAN ready on GPIO%d/GPIO%d (TX+RX)", PIN_CAN_TX, PIN_CAN_RX);
@@ -229,7 +235,7 @@ void setup()
         Logger::console("CAN not available");
     }
 
-    // 12. Auto-balance
+    // 13. Auto-balance
     bms.setAutoBalance(settings.balancingEnabled != 0);
 
     display.setPage(0);
