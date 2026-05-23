@@ -35,7 +35,7 @@ jobs:
       # -----------------------------------------------------------------------
       # 3. Set up PlatformIO
       # -----------------------------------------------------------------------
-      - name: Cache PlatformIO
+      - name: Set up PlatformIO
         uses: actions/cache@v4
         with:
           path: ~/.platformio
@@ -57,11 +57,12 @@ jobs:
         run: |
           BUILD_DIR=".pio/build/m5dial"
 
-          # Use the bootloader PlatformIO built for THIS project — guaranteed correct
-          # Do NOT search ~/.platformio as it may find tinyuf2 or other wrong variants
+          # Use the bootloader PlatformIO built for this project.
+          # Do NOT search ~/.platformio — it may find tinyuf2 or other wrong
+          # variants (e.g. um_pros3) that cause boot loops on M5Dial.
           BOOTLOADER="$BUILD_DIR/bootloader.bin"
           if [ ! -f "$BOOTLOADER" ]; then
-            echo "ERROR: bootloader.bin not found in build dir!"
+            echo "ERROR: bootloader.bin not found in build dir — build may have failed"
             exit 1
           fi
 
@@ -83,6 +84,7 @@ jobs:
       #   partitions  0x8000
       #   boot_app0   0xe000
       #   firmware    0x10000
+      #
       # No SPIFFS — all config stored in NVS/EEPROM
       # flash_mode dio matches Dial Display project — safe for ESP32-S3 merge
       # -----------------------------------------------------------------------
@@ -91,7 +93,6 @@ jobs:
           esptool.py --chip esp32s3 merge_bin \
             --output factory.bin \
             --flash_mode dio \
-            --flash_freq 80m \
             --flash_size 8MB \
             0x0000   ${{ env.BOOTLOADER }} \
             0x8000   ${{ env.BUILD_DIR }}/partitions.bin \
