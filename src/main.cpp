@@ -148,21 +148,15 @@ static void toggleWifi()
 // =============================================================================
 void setup()
 {
-    // 1. M5Dial init FIRST — matches Dial Display Hardware::init() sequence
-    //    Power hold AFTER M5.begin() — AXP2101 must init before GPIO46 is driven
-    auto cfg = M5.config();
-    M5.begin(cfg);
-
-    // 2. Power hold AFTER M5.begin()
+    // 1. Power hold MUST be first
     pinMode(PIN_POWER_HOLD, OUTPUT);
     digitalWrite(PIN_POWER_HOLD, HIGH);
 
-    // 3. Display config — match Dial Display exactly
+    // 2. M5Dial init
+    auto cfg = M5.config();
+    M5.begin(cfg);
     M5.Display.setRotation(0);
     M5.Display.setBrightness(180);
-    M5.Display.setColorDepth(16);
-    M5.Display.setSwapBytes(false);
-    M5.Display.fillScreen(TFT_BLACK);
 
     // 4. LVGL display
     display.begin();
