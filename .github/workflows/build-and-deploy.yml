@@ -57,18 +57,20 @@ jobs:
         run: |
           BUILD_DIR=".pio/build/m5dial"
 
-          # Find bootloader inside PlatformIO packages
-          BOOTLOADER=$(find ~/.platformio -name "bootloader_qio_80m.bin" 2>/dev/null | head -1)
-          if [ -z "$BOOTLOADER" ]; then
-            BOOTLOADER=$(find ~/.platformio -name "bootloader*.bin" 2>/dev/null | head -1)
+          # Use the bootloader PlatformIO built for THIS project — guaranteed correct
+          # Do NOT search ~/.platformio as it may find tinyuf2 or other wrong variants
+          BOOTLOADER="$BUILD_DIR/bootloader.bin"
+          if [ ! -f "$BOOTLOADER" ]; then
+            echo "ERROR: bootloader.bin not found in build dir!"
+            exit 1
           fi
-          echo "BOOTLOADER=$BOOTLOADER" >> $GITHUB_ENV
 
           # boot_app0 (OTA slot marker)
           BOOT_APP0=$(find ~/.platformio -name "boot_app0.bin" 2>/dev/null | head -1)
           echo "BOOT_APP0=$BOOT_APP0" >> $GITHUB_ENV
 
           echo "BUILD_DIR=$BUILD_DIR" >> $GITHUB_ENV
+          echo "BOOTLOADER=$BOOTLOADER" >> $GITHUB_ENV
           echo "Bootloader: $BOOTLOADER"
           echo "boot_app0:  $BOOT_APP0"
           ls -la $BUILD_DIR/
