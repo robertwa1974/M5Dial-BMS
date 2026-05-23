@@ -569,16 +569,16 @@ Required only if you need to modify the firmware.
 
 ### 11.3 Library Dependencies
 
-M5GFX and M5Unified are **vendored** in `lib/M5GFX/` and `lib/M5Unified/` respectively and are not fetched from the registry. All other libraries are pinned to exact versions in `platformio.ini`.
+All libraries are pinned to exact versions in `platformio.ini` and fetched from the PlatformIO registry. M5Unified and M5GFX are pinned to `0.1.16` — this specific version correctly initialises the M5Dial AXP2101 backlight after a full chip erase. Do not upgrade past `0.1.x` without testing the web installer.
 
-| Library | Version | Source |
-|---|---|---|
-| m5stack/M5GFX | 0.2.6 | Vendored in `lib/` |
-| m5stack/M5Unified | 0.2.5 | Vendored in `lib/` |
-| lvgl/lvgl | 8.4.0 | PlatformIO registry |
-| esphome/AsyncTCP-esphome | 2.1.4 | PlatformIO registry |
-| esphome/ESPAsyncWebServer-esphome | 3.3.0 | PlatformIO registry |
-| bblanchon/ArduinoJson | 7.3.1 | PlatformIO registry |
+| Library | Version |
+|---|---|
+| m5stack/M5GFX | 0.1.16 |
+| m5stack/M5Unified | 0.1.16 |
+| lvgl/lvgl | 8.4.0 |
+| esphome/AsyncTCP-esphome | 2.1.4 |
+| esphome/ESPAsyncWebServer-esphome | 3.3.0 |
+| bblanchon/ArduinoJson | 7.3.1 |
 
 ---
 

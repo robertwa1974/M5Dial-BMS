@@ -9,14 +9,17 @@
 - **WiFi credentials updated** — default SSID and password changed from `TeslaBMS` / `teslapack` to `M5DialBMS` / `M5DialBMS`.
 
 ### Build System
-- **M5GFX and M5Unified vendored** into `lib/M5GFX/` and `lib/M5Unified/` (v0.2.6 and v0.2.5 respectively). This permanently resolves the LVGL collision that prevented fresh builds on external testers' machines. Libraries are now committed to the repository and PlatformIO no longer fetches them from the registry.
+- **M5Unified and M5GFX pinned to 0.1.16** — matches the Dial Display project. This version correctly initialises the AXP2101 backlight power rail after a full chip erase (web installer). Versions 0.2.x leave the backlight off after web flash.
 - **Platform pinned** — `espressif32 @ 6.10.0` in `platformio.ini` ensures reproducible builds. Removed `ARDUINO_RUNNING_CORE` and `ARDUINO_EVENT_RUNNING_CORE` build flags that conflicted with this platform version.
-- **All other lib_deps pinned** — `AsyncTCP-esphome @ 2.1.4`, `ESPAsyncWebServer-esphome @ 3.3.0`, `ArduinoJson @ 7.3.1`, `lvgl @ 8.4.0`.
+- **All lib_deps pinned** — `M5Unified @ 0.1.16`, `M5GFX @ 0.1.16`, `AsyncTCP-esphome @ 2.1.4`, `ESPAsyncWebServer-esphome @ 3.3.0`, `ArduinoJson @ 7.3.1`, `lvgl @ 8.4.0`.
+- **Vendored lib/ folder removed** — no longer needed now that 0.1.16 is used directly from the registry.
 
 ### Web Installer
 - **GitHub Actions CI/CD** — `.github/workflows/build-and-deploy.yml` added. On every tagged release (`git tag vX.Y.Z`), the workflow builds firmware, merges bootloader + partitions + firmware into a single `factory.bin`, and deploys it to GitHub Pages automatically.
 - **Web installer** live at `https://robertwa1974.github.io/M5Dial-BMS` — one-click flash from Chrome or Edge, no tools required.
 - `docs/index.html` and `docs/manifest.json` added to repository.
+- **Bootloader fix** — workflow now uses the project-built `bootloader.bin` from `.pio/build/m5dial/` instead of searching `~/.platformio`, which previously found the wrong `tinyuf2` bootloader from an unrelated board variant causing boot loops.
+- **`M5.begin()` init order fixed** — power hold pin (GPIO46) now set after `M5.begin()` to match Dial Display init sequence and ensure correct AXP2101 startup.
 
 ### EEPROM
 - Version bumped `0x18` → `0x19` to force SSID/password defaults reset on upgrade from v7-beta2

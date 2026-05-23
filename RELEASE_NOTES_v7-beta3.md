@@ -8,7 +8,7 @@ Flash directly from your browser — no tools, no file downloads:
 **https://robertwa1974.github.io/M5Dial-BMS**
 
 Connect your M5Dial via USB-C, click Install, wait ~60 seconds. Done.
-Requires Chrome or Edge (Web Serial API). Firefox and Safari are not supported.
+Requires Chrome or Edge. Firefox and Safari are not supported.
 
 If the web installer is unavailable, download `factory.bin` from the Assets below and flash manually at address `0x0` using [esptool-js](https://espressif.github.io/esptool-js/).
 
@@ -19,7 +19,12 @@ A GVRET-compatible TCP server runs on port 23 whenever WiFi is active. Connect S
 Default SSID and password changed to `M5DialBMS` / `M5DialBMS`.
 
 ### Build System Fixed
-M5GFX 0.2.6 and M5Unified 0.2.5 are now vendored in `lib/` — eliminates the LVGL collision that caused build failures on fresh installs. `espressif32 @ 6.10.0` platform is pinned. All library versions are fixed.
+M5Unified and M5GFX pinned to `0.1.16` — this version correctly initialises the M5Dial AXP2101 backlight after a full chip erase. All library versions are pinned in `platformio.ini` and fetched from the registry.
+
+### Serial Console Updated
+- `CMUTYPE` command now accepts 0–4 with full name display for each type
+- `NUMCELLS` range extended to 1–16
+- Menu header updated to M5DialBMS v7
 
 ---
 
@@ -48,4 +53,4 @@ EEPROM version has been bumped `0x18` → `0x19`. On first boot after flashing, 
 
 ---
 
-*Full changelog: [CHANGELOG.md](CHANGELOG.md) · Full manual: [Operating Manual v7](docs/M5DialBMS_OperatingManual_v7.md)*
+*Full changelog: [CHANGELOG.md](CHANGELOG.md) · Full manual: [M5DialBMS_OperatingManual_v7.md](docs/M5DialBMS_OperatingManual_v7.md)*
