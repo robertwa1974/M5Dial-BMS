@@ -1,16 +1,16 @@
 // =============================================================================
 // main.cpp - M5DialBMS v7
 //
-// New in v6:
-//   - CAN RX (FreeRTOS task in CANManager): charger heartbeat inhibit + i3 decode
-//   - BMW i3 CSC CAN slave support (CMU_BMW_I3 mode)
-//   - CMU type selectable from settings (Tesla UART / BMW i3 CAN)
-//   - Long-press encoder button toggles WiFi on/off at runtime
-//   - Balance inhibit: GPIO38 AND/OR charger CAN heartbeat timeout
+// New in v7:
+//   - 5 CMU types: Tesla UART / BMW i3 / BMW i3 Bus Pack / BMW Mini-E / BMW PHEV
+//   - BMW PHEV SP06/SP41/SP44 support (polled 50ms, 16 cells, 4 temps)
+//   - GVRET/SavvyCAN TCP server on port 23
+//   - Web installer via GitHub Pages CI/CD
+//   - M5DialBMS branding, WiFi SSID M5DialBMS/M5DialBMS
 //
 // Hardware:
 //   CMU UART  : Grove A  - GPIO13(RX) / GPIO15(TX)  [Tesla mode only]
-//   CAN XCVR  : Grove B  - GPIO1(TX)  / GPIO2(RX)
+//   CAN XCVR  : Grove B  - GPIO2(TX)  / GPIO1(RX)
 //   Drive inh : GPIO38   - HIGH = drive, inhibit balancing
 //   Encoder   : GPIO40(A) / GPIO41(B) / GPIO42(BTN)
 //   Power latch: GPIO46
@@ -110,6 +110,21 @@ void applySettings();
 int  nextExistingPage(int current, int direction);
 
 // ---------------------------------------------------------------------------
+// Helper: human-readable CMU type label
+// ---------------------------------------------------------------------------
+static const char *cmuTypeName()
+{
+    switch (settings.cmuType) {
+        case CMU_TESLA:      return "Tesla UART";
+        case CMU_BMW_I3:     return "BMW i3";
+        case CMU_BMW_I3_BUS: return "BMW i3 Bus";
+        case CMU_BMW_MINIE:  return "BMW Mini-E";
+        case CMU_BMW_PHEV:   return "BMW PHEV";
+        default:             return "Unknown";
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers exposed to SerialConsole
 // ---------------------------------------------------------------------------
 void stopWifiAndCan()
@@ -158,41 +173,39 @@ void setup()
     M5.Display.setRotation(0);
     M5.Display.setBrightness(180);
 
-    // 4. LVGL display
+    // 3. LVGL display
     display.begin();
     display.showStartup("Booting...");
 
-    // 5. Encoder
+    // 4. Encoder
     pinMode(ENC_A_PIN,   INPUT_PULLUP);
     pinMode(ENC_B_PIN,   INPUT_PULLUP);
     pinMode(ENC_BTN_PIN, INPUT_PULLUP);
     lastEncA     = digitalRead(ENC_A_PIN);
     lastBtnState = (digitalRead(ENC_BTN_PIN) == LOW);
 
-    // 6. Drive inhibit GPIO
+    // 5. Drive inhibit GPIO
     pinMode(PIN_DRIVE_INHIBIT, INPUT_PULLDOWN);
 
-    // 7. USB console
+    // 6. USB console
     Serial.begin(115200);
     uint32_t t0 = millis();
     while (!Serial && (millis() - t0) < 3000) delay(10);
     Logger::console("M5DialBMS v7 booting...");
 
-    // 8. CMU UART (Tesla mode only)
-    if (true) {  // Always init UART - needed for Tesla mode; harmless for i3
-        SERIALBMS.begin(BMS_BAUD_RATE, SERIAL_8N1, BMS_SERIAL_RX_PIN, BMS_SERIAL_TX_PIN);
-        delay(50);
-        while (SERIALBMS.available()) SERIALBMS.read();
-        Logger::console("CMU UART: %d baud GPIO%d/GPIO%d",
-                        BMS_BAUD_RATE, BMS_SERIAL_RX_PIN, BMS_SERIAL_TX_PIN);
-    }
+    // 7. CMU UART — always init; harmless in CAN-only modes
+    SERIALBMS.begin(BMS_BAUD_RATE, SERIAL_8N1, BMS_SERIAL_RX_PIN, BMS_SERIAL_TX_PIN);
+    delay(50);
+    while (SERIALBMS.available()) SERIALBMS.read();
+    Logger::console("CMU UART: %d baud GPIO%d/GPIO%d",
+                    BMS_BAUD_RATE, BMS_SERIAL_RX_PIN, BMS_SERIAL_TX_PIN);
 
-    // 9. EEPROM / settings
+    // 8. EEPROM / settings
     EEPROM.begin(sizeof(EEPROMSettings));
     loadSettings();
     applySettings();
 
-    // 10. BMS enumeration - path depends on CMU type
+    // 9. BMS enumeration — path depends on CMU type
     if (settings.cmuType == CMU_TESLA) {
         display.showStartup("Waking CMUs...");
         Logger::console("Tesla UART mode: waking and numbering CMUs...");
@@ -204,24 +217,27 @@ void setup()
         display.showStartup("Finding...");
         bms.findBoards();
         bms.clearFaults();
+    } else if (settings.cmuType == CMU_BMW_PHEV) {
+        Logger::console("BMW PHEV CAN mode: skipping UART enumeration");
+        display.showStartup("PHEV CAN mode...");
+        // Module discovery via 0x080 polls — starts automatically once CAN begins
     } else {
-        Logger::console("BMW i3 CAN mode: skipping UART enumeration");
-        display.showStartup("i3 CAN mode...");
-        // Modules will appear once CAN RX task sees their frames
+        Logger::console("%s CAN mode: skipping UART enumeration", cmuTypeName());
+        display.showStartup("BMW CAN mode...");
+        // Modules appear once CAN RX task sees their frames
     }
 
     int n = bms.getNumModules();
-    Logger::console("Ready. Mode: %s, %d module(s) found so far.",
-                    settings.cmuType == CMU_TESLA ? "Tesla UART" : "BMW i3 CAN", n);
+    Logger::console("Ready. CMU=%s (%d), %d module(s) found.", cmuTypeName(), settings.cmuType, n);
 
-    // 11. WiFi (if enabled at boot)
+    // 10. WiFi (if enabled at boot)
     if (settings.wifiEnabled) {
         display.showStartup("Starting WiFi...");
         wifi.begin();
         wifiDisplayIP = wifi.getIP();
     }
 
-    // 12. CAN (always attempt - RX task starts inside begin())
+    // 11. CAN (always attempt - RX task starts inside begin())
     display.showStartup("Starting CAN...");
     if (can.begin()) {
         Logger::console("CAN ready on GPIO%d/GPIO%d (TX+RX)", PIN_CAN_TX, PIN_CAN_RX);
@@ -229,7 +245,7 @@ void setup()
         Logger::console("CAN not available");
     }
 
-    // 13. Auto-balance
+    // 12. Auto-balance
     bms.setAutoBalance(settings.balancingEnabled != 0);
 
     display.setPage(0);
@@ -256,20 +272,23 @@ void loop()
     bool canInhibit  = (settings.canInhibitEnabled && can.isRunning() && !can.getChargerActive());
     bms.setBalanceInhibit(gpioInhibit || canInhibit);
 
-    // BMS read
+    // BMS read — dispatch by CMU type
     if (now - lastBmsRead >= BMS_READ_INTERVAL_MS) {
         lastBmsRead = now;
 
-        if (settings.cmuType == CMU_TESLA) {
-            bms.getAllVoltTemp();
-        } else {
-            bms.getAllVoltTempFromCAN();
-        }
-
-        // Auto-balance (Tesla UART only - i3 modules balance internally)
-        if (settings.cmuType == CMU_TESLA &&
-            bms.getAutoBalance() && !bms.getBalanceInhibit() && !bms.isFaultedState()) {
-            bms.balanceCells();
+        switch (settings.cmuType) {
+            case CMU_TESLA:
+                bms.getAllVoltTemp();
+                // Auto-balance: Tesla UART only — CAN modules handle balancing internally
+                if (bms.getAutoBalance() && !bms.getBalanceInhibit() && !bms.isFaultedState())
+                    bms.balanceCells();
+                break;
+            case CMU_BMW_PHEV:
+                bms.getAllVoltTempFromPHEV();
+                break;
+            default:  // CMU_BMW_I3, CMU_BMW_I3_BUS, CMU_BMW_MINIE
+                bms.getAllVoltTempFromCAN();
+                break;
         }
 
         display.markDirty();
@@ -286,13 +305,10 @@ void loop()
         }
     }
 
-    // CAN TX summary frames — only when an external device (inverter/charger)
-    // is present to ACK them. Unacknowledged frames accumulate TX errors and
-    // can cause bus-off. externalDeviceSeen latches true on first non-CSC RX.
+    // CAN TX summary frames
     if (can.isRunning() && (now - lastCANSend >= CAN_SEND_INTERVAL_MS)) {
         lastCANSend = now;
-        if (can.hasExternalDevice())
-            can.sendBatterySummary();
+        can.sendBatterySummary();
     }
 
     // Encoder navigation
@@ -361,7 +377,7 @@ void loadSettings()
         settings.socLo       = DEFAULT_SOC_LO;
         settings.socHi       = DEFAULT_SOC_HI;
         memset(settings.moduleCells, 0, sizeof(settings.moduleCells));
-        // v7 new defaults
+        // v6 new defaults
         settings.cmuType            = CMU_TESLA;
         settings.canInhibitEnabled  = DEFAULT_CAN_INHIBIT;
         settings.chargerHeartbeatID = DEFAULT_CHARGER_HB_ID;
@@ -371,7 +387,7 @@ void loadSettings()
     } else {
         Logger::console("Settings loaded: OV=%.2fV UV=%.2fV CMU=%s WiFi=%d CanInh=%d",
                         settings.OverVSetpoint, settings.UnderVSetpoint,
-                        settings.cmuType == CMU_TESLA ? "Tesla" : "BMW-i3",
+                        cmuTypeName(),
                         settings.wifiEnabled, settings.canInhibitEnabled);
     }
 }

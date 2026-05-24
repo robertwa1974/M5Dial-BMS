@@ -18,14 +18,21 @@
 extern BMSModuleManager bms;
 extern EEPROMSettings   settings;
 
+// PHEV CRC finalxor table — declared extern in bms_config.h
+const uint8_t BMW_PHEV_FINAL_XOR[12] = {
+    0xCF, 0xF5, 0xBB, 0x81, 0x27, 0x1D, 0x53, 0x69, 0x02, 0x38, 0x76, 0x4C
+};
+
 CANManager::CANManager()
-    : running(false), rxTaskHandle(nullptr),
-      lastChargerSeen(0), canCurrentA(0.0f),
-      externalDeviceSeen(false)
+    : running(false), rxTaskHandle(nullptr), phevCmdTaskHandle(nullptr),
+      lastChargerSeen(0), canCurrentA(0.0f), externalDeviceSeen(false),
+      phevNextMod(0), phevMesCycle(0), phevTestCycle(0), phevBalCells(false)
 {
     memset(i3data,   0, sizeof(i3data));
     memset(i3acc,    0, sizeof(i3acc));
     memset(phevdata, 0, sizeof(phevdata));
+    memset(phevAcc,  0, sizeof(phevAcc));
+    phevCrc8.begin();
 }
 
 // ---------------------------------------------------------------------------
@@ -65,6 +72,18 @@ bool CANManager::begin()
         sendI3WakeFrame();
     }
 
+    // BMW PHEV: clear stale module IDs then start poll task
+    if (settings.cmuType == CMU_BMW_PHEV) {
+        sendPhevResetIDs();
+        vTaskDelay(pdMS_TO_TICKS(50));   // yield to scheduler before starting poll task
+        xTaskCreatePinnedToCore(
+            phevCmdTaskFn, "PHEV_CMD", 3072, this, 4, &phevCmdTaskHandle, 0);
+        Logger::info("CAN: PHEV mode — poll task running (0x%03X..0x%03X every %dms)",
+                     BMW_PHEV_CMD_BASE,
+                     BMW_PHEV_CMD_BASE + BMW_PHEV_MAX_MODS - 1,
+                     BMW_PHEV_CMD_RATE_MS);
+    }
+
     return true;
 }
 
@@ -75,7 +94,8 @@ void CANManager::end()
 {
     if (!running) return;
     running = false;
-    if (rxTaskHandle) { vTaskDelete(rxTaskHandle); rxTaskHandle = nullptr; }
+    if (phevCmdTaskHandle) { vTaskDelete(phevCmdTaskHandle); phevCmdTaskHandle = nullptr; }
+    if (rxTaskHandle)      { vTaskDelete(rxTaskHandle);      rxTaskHandle      = nullptr; }
     twai_stop();
     twai_driver_uninstall();
     Logger::info("CAN stopped");
@@ -127,6 +147,19 @@ void CANManager::rxTaskFn(void *param)
 }
 
 // ---------------------------------------------------------------------------
+// phevCmdTaskFn - FreeRTOS task: send PHEV poll commands every 50ms
+// ---------------------------------------------------------------------------
+void CANManager::phevCmdTaskFn(void *param)
+{
+    CANManager *self = (CANManager *)param;
+    while (self->running) {
+        self->sendPhevCommand();
+        vTaskDelay(pdMS_TO_TICKS(BMW_PHEV_CMD_RATE_MS));
+    }
+    vTaskDelete(nullptr);
+}
+
+// ---------------------------------------------------------------------------
 // processRxFrame
 // ---------------------------------------------------------------------------
 void CANManager::processRxFrame(const twai_message_t &msg)
@@ -172,6 +205,106 @@ void CANManager::processRxFrame(const twai_message_t &msg)
         return;
     }
 
+    // -----------------------------------------------------------------------
+    // BMW PHEV CSC — status/error frames  (0x0A0..0x0AF)
+    // type nibble 0x0 = status: bytes 0-3 error word LE, bytes 4-5 balstat LE
+    // Gated on PHEV mode to avoid mis-decoding BMWI3BUS/Mini-E frames.
+    // -----------------------------------------------------------------------
+    if (settings.cmuType == CMU_BMW_PHEV &&
+        id >= BMW_PHEV_STATUS_BASE && id <= (BMW_PHEV_STATUS_BASE + BMW_PHEV_MAX_MODS - 1))
+    {
+        int mod = (int)(id & 0x00F) + 1;
+        if (mod < 1 || mod > BMW_PHEV_MAX_MODS || dlc < 6) {
+            wifiLogCAN(id, (uint8_t *)msg.data, dlc);
+            return;
+        }
+        phevdata[mod].error   = (uint32_t)( msg.data[0]
+                              | ((uint32_t)msg.data[1] << 8)
+                              | ((uint32_t)msg.data[2] << 16)
+                              | ((uint32_t)msg.data[3] << 24));
+        phevdata[mod].balstat = (uint16_t)(msg.data[4] | ((uint16_t)msg.data[5] << 8));
+        wifiLogCAN(id, (uint8_t *)msg.data, dlc);
+        return;
+    }
+
+    // -----------------------------------------------------------------------
+    // BMW PHEV CSC — cell voltage frames  (0x120..0x17F)
+    //
+    // Frame ID = (type_nibble << 4) | mod_index  (mod_index 0-based)
+    //   type 0x02 → cells  0, 1, 2   sfBit 0
+    //   type 0x03 → cells  3, 4, 5   sfBit 1
+    //   type 0x04 → cells  6, 7, 8   sfBit 2
+    //   type 0x05 → cells  9,10,11   sfBit 3
+    //   type 0x06 → cells 12,13,14   sfBit 4
+    //   type 0x07 → cell  15 only    sfBit 5
+    // Encoding: little-endian 14-bit, 1mV/bit
+    //   v = float(buf[n*2] + (buf[n*2+1] & 0x3F) * 256) / 1000.0f
+    // Commit when framesRx == 0x3F (all 6 sub-frames received).
+    // Cell updates suppressed while balstat != 0 (module is balancing).
+    // -----------------------------------------------------------------------
+    if (settings.cmuType == CMU_BMW_PHEV &&
+        id >= BMW_PHEV_CELL_BASE && id <= BMW_PHEV_CELL_MAX)
+    {
+        int subId = (int)(id & 0x0F0);
+        int mod   = (int)(id & 0x00F) + 1;
+        if (mod < 1 || mod > BMW_PHEV_MAX_MODS) {
+            wifiLogCAN(id, (uint8_t *)msg.data, dlc);
+            return;
+        }
+
+        int sfBit, base, numCells;
+        switch (subId) {
+            case 0x020: sfBit = 0; base =  0; numCells = 3; break;
+            case 0x030: sfBit = 1; base =  3; numCells = 3; break;
+            case 0x040: sfBit = 2; base =  6; numCells = 3; break;
+            case 0x050: sfBit = 3; base =  9; numCells = 3; break;
+            case 0x060: sfBit = 4; base = 12; numCells = 3; break;
+            case 0x070: sfBit = 5; base = 15; numCells = 1; break;
+            default:
+                wifiLogCAN(id, (uint8_t *)msg.data, dlc);
+                return;
+        }
+
+        // Skip cell updates during active balancing
+        if (phevdata[mod].balstat == 0) {
+            for (int c = 0; c < numCells; c++) {
+                uint16_t raw = (uint16_t)msg.data[c * 2]
+                             + (uint16_t)((msg.data[c * 2 + 1] & 0x3F) * 256);
+                phevAcc[mod].cells[base + c] = raw * 0.001f;
+            }
+        }
+        phevAcc[mod].framesRx |= (1 << sfBit);
+
+        if (phevAcc[mod].framesRx == 0x3F) {
+            memcpy(phevdata[mod].cellV, phevAcc[mod].cells, sizeof(phevAcc[mod].cells));
+            phevdata[mod].fresh      = true;
+            phevdata[mod].lastSeenMs = millis();
+            phevAcc[mod].framesRx    = 0;
+        }
+        wifiLogCAN(id, (uint8_t *)msg.data, dlc);
+        return;
+    }
+
+    // -----------------------------------------------------------------------
+    // BMW PHEV CSC — temperature frames  (0x180..0x18F)
+    //   temp[g] = buf[g] - 40  (uint8, -40°C offset, 4 sensors per module)
+    // -----------------------------------------------------------------------
+    if (settings.cmuType == CMU_BMW_PHEV &&
+        id >= BMW_PHEV_TEMP_BASE && id <= BMW_PHEV_TEMP_MAX)
+    {
+        int mod = (int)(id & 0x00F) + 1;
+        if (mod < 1 || mod > BMW_PHEV_MAX_MODS || dlc < 4) {
+            wifiLogCAN(id, (uint8_t *)msg.data, dlc);
+            return;
+        }
+        for (int g = 0; g < 4 && g < (int)dlc; g++) {
+            phevdata[mod].temp[g] = (float)msg.data[g] - 40.0f;
+        }
+        phevdata[mod].lastSeenMs = millis();
+        wifiLogCAN(id, (uint8_t *)msg.data, dlc);
+        return;
+    }
+
     // Any frame outside the BMW CSC range confirms an external device is present
     if (id < 0x080 || id > 0x1FF) externalDeviceSeen = true;
 
@@ -205,10 +338,102 @@ bool CANManager::getI3SlaveData(int addr, I3SlaveData &out)
 
 bool CANManager::getPhevSlaveData(int slot, PhevSlaveData &out)
 {
-    if (slot < 1 || slot > 6) return false;
+    if (slot < 1 || slot > BMW_PHEV_MAX_MODS) return false;
     out = phevdata[slot];
     phevdata[slot].fresh = false;
     return out.lastSeenMs > 0;
+}
+
+// ---------------------------------------------------------------------------
+// getPhevChecksum
+// CRC8 over [id_high, id_low, buf[0]..buf[5]], XOR with BMW_PHEV_FINAL_XOR[modIdx]
+// modIdx is the 0-based module index (0..BMW_PHEV_MAX_MODS-1).
+// ---------------------------------------------------------------------------
+uint8_t CANManager::getPhevChecksum(uint32_t id, uint8_t *buf, int modIdx)
+{
+    uint8_t canmes[8];
+    canmes[0] = (uint8_t)(id >> 8);
+    canmes[1] = (uint8_t)(id & 0xFF);
+    for (int i = 0; i < 6; i++) canmes[i + 2] = buf[i];
+    return phevCrc8.get_crc8(canmes, 8, BMW_PHEV_FINAL_XOR[modIdx]);
+}
+
+// ---------------------------------------------------------------------------
+// sendPhevCommand
+// Sends one poll command to phevNextMod then advances the cycle state.
+// Mirrors the Teensy BMWPhevBMS sendcommand() logic exactly.
+// ---------------------------------------------------------------------------
+void CANManager::sendPhevCommand()
+{
+    if (!running) return;
+
+    uint8_t  buf[8] = {0};
+    uint32_t id = (uint32_t)BMW_PHEV_CMD_BASE | (uint32_t)phevNextMod;
+
+    // bytes 0-1: balance target voltage (LE) or idle sentinel
+    if (phevBalCells) {
+        uint16_t balTarget = (uint16_t)((bms.getLowCellVolt() * 1000.0f) + 5.0f);
+        buf[0] = (uint8_t)(balTarget & 0xFF);
+        buf[1] = (uint8_t)(balTarget >> 8);
+    } else {
+        buf[0] = 0xC7;
+        buf[1] = 0x10;
+    }
+
+    // bytes 2-3: balance enable bits (zero = no balancing)
+    buf[2] = 0x00;
+    buf[3] = 0x00;
+
+    // bytes 4-5: measurement type
+    //   testCycle <  3: init sequence — request measurement start (0x20/0x00)
+    //   testCycle >= 3: steady state  — request voltage+temp (0x40) or +balance (0x48)
+    if (phevTestCycle < 3) {
+        buf[4] = 0x20;
+        buf[5] = 0x00;
+    } else {
+        buf[4] = phevBalCells ? 0x48 : 0x40;
+        buf[5] = 0x01;
+    }
+
+    // byte 6: rolling counter nibble (upper 4 bits) + optional init flag
+    buf[6] = (uint8_t)(phevMesCycle << 4);
+    if (phevTestCycle == 2) buf[6] |= 0x04;
+
+    // byte 7: CRC
+    buf[7] = getPhevChecksum(id, buf, (int)phevNextMod);
+
+    sendFrame(id, buf, 8);
+
+    // Advance cycle — mirrors Teensy nextmes / mescycle / testcycle logic
+    phevNextMod++;
+    if (phevNextMod >= (uint8_t)BMW_PHEV_MAX_MODS) {
+        phevNextMod = 0;
+        phevMesCycle++;
+        if (phevMesCycle > 0x0F) phevMesCycle = 0;
+        if (phevTestCycle < 4) phevTestCycle++;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// sendPhevResetIDs
+// Broadcasts 0x0A0 wipe sequence to clear all module ID assignments.
+// Called once at startup in PHEV mode before polling begins.
+// ---------------------------------------------------------------------------
+void CANManager::sendPhevResetIDs()
+{
+    uint8_t buf[8];
+    for (int slot = 0; slot < BMW_PHEV_MAX_MODS + 1; slot++) {
+        buf[0] = 0xA1;
+        buf[1] = (uint8_t)slot;
+        memset(buf + 2, 0xFF, 6);
+        sendFrame(BMW_PHEV_MGMT_ID, buf, 8);
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+    // Broadcast "find unassigned" so modules announce themselves
+    buf[0] = 0x37;
+    memset(buf + 1, 0xFF, 7);
+    sendFrame(BMW_PHEV_MGMT_ID, buf, 8);
+    Logger::info("CAN: PHEV ID reset sent, discovery broadcast done");
 }
 
 void CANManager::sendI3WakeFrame()

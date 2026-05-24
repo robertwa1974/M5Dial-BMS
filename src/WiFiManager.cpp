@@ -1,11 +1,10 @@
 // =============================================================================
-// WiFiManager.cpp  v7
+// WiFiManager.cpp  v5.1
 // Routes:
 //   GET /            -> HTML dashboard (3 tabs: Pack/Modules, CAN Feed, Settings)
 //   GET /api/data    -> JSON pack + module data (respects numCells)
 //   GET /api/can     -> JSON array of last 50 CAN frames (rolling buffer)
 //   GET /api/settings -> current settings JSON
-//   TCP port 23      -> GVRET binary protocol for SavvyCAN
 // =============================================================================
 #include "WiFiManager.h"
 #include "CANManager.h"
@@ -44,10 +43,6 @@ void wifiLogCAN(uint32_t id, uint8_t *data, uint8_t len)
     memcpy(canLog[canLogHead].data, data, len < 8 ? len : 8);
     canLogHead = (canLogHead + 1) % CAN_LOG_SIZE;
     if (canLogCount < CAN_LOG_SIZE) canLogCount++;
-
-    // Push to any connected GVRET/SavvyCAN client
-    extern WiFiManager wifi;
-    wifi.gvretPushFrame(id, data, len, false);
 }
 
 // SimpBMS frame decoder - returns human-readable description
@@ -91,9 +86,7 @@ static String decodeCAN(uint32_t id, uint8_t *d)
     }
 }
 
-WiFiManager::WiFiManager()
-    : running(false), ipAddr(""),
-      gvretServer(23), gvretClientConnected(false) {}
+WiFiManager::WiFiManager() : running(false), ipAddr("") {}
 
 // ---------------------------------------------------------------------------
 // HTML - single file, 3-tab layout
@@ -104,7 +97,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>M5DialBMS</title>
+<title>TeslaBMS</title>
 <style>
 :root{--ok:#22c55e;--warn:#f59e0b;--err:#ef4444;--bg:#0f172a;--card:#1e293b;--text:#f1f5f9;--sub:#94a3b8;--border:#334155}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -179,7 +172,7 @@ h1{text-align:center;font-size:1.3rem;padding:1rem;color:var(--ok)}
 </style>
 </head>
 <body>
-<h1>&#9889; M5DialBMS Dashboard</h1>
+<h1>&#9889; TeslaBMS Dashboard</h1>
 <div class="tabs">
   <div class="tab active" onclick="switchTab('pack')">Pack &amp; Modules</div>
   <div class="tab" onclick="switchTab('can')">CAN Feed</div>
@@ -406,39 +399,32 @@ function renderSettingsForm(){
   }
   if(inGroup) html+='</div></div>';
 
-  // CMU / inhibit section
+  // Per-module cell count section - only show modules that exist (have been found)
+  // v6 CMU / inhibit fields
+  const ct=document.getElementById('cmuType');
+  if(ct) ct.value=String(s.cmuType||0);
+  const ci=document.getElementById('canInhibitEnabled');
+  if(ci) ci.value=String(s.canInhibitEnabled?1:0);
+  const chgId=document.getElementById('chargerHeartbeatID');
+  if(chgId) chgId.value='0x'+(s.chargerHeartbeatID||0x305).toString(16).toUpperCase();
   const mc=s.moduleCells||[];
   const globalCells=s.numCells||6;
+  // Collect which module slots are nonzero-override OR are found modules
+  // We show all slots 1..maxModules that have an override set, plus allow setting any 1..20
   html+=`<div class="sf-group" style="grid-column:span 2">
-  <h3>CMU Type &amp; Balance Inhibit</h3>
-  <div class="row"><label>CMU Type (reboot required)</label>
-    <select id="cmuType">
-      <option value="0">0 — Tesla UART (BQ76PL536A)</option>
-      <option value="1">1 — BMW i3 CSC standard</option>
-      <option value="2">2 — BMW i3 CSC bus pack</option>
-      <option value="3">3 — BMW Mini-E CSC</option>
-      <option value="4">4 — BMW PHEV SP06/SP41</option>
-    </select>
-  </div>
-  <div class="row"><label>Balance Inhibit</label>
-    <select id="canInhibitEnabled">
-      <option value="0">GPIO only</option>
-      <option value="1">GPIO + CAN charger heartbeat</option>
-    </select>
-  </div>
-  <div class="row"><label>Charger HB ID</label>
-    <input type="text" id="chargerHeartbeatID" style="width:80px" placeholder="0x305">
-  </div>
-  <div class="row"><label>Charger active</label>
-    <span id="chargerStatus" style="font-weight:bold">--</span>
-  </div>
-  <h4>Per-Module Cell Count Override</h4>
-  <p style="font-size:.72rem;color:var(--sub);margin-bottom:.7rem">
-    Global default: <strong>${globalCells} cells</strong>
-    (change via &#8220;Cells per module&#8221; above).
-    Set to <strong>0</strong> to inherit global default.
-  </p>
-  <div class="mod-cell-grid" id="modCellGrid">`;
+  <h3>CMU Type &amp; Balance Inhibit (v6)</h3>
+  <div class=\"row\"><label>CMU Type (reboot)</label><select id=\"cmuType\"><option value=\"0\">Tesla UART</option><option value=\"1\">BMW i3 CAN</option><option value=\"2\">BMW i3 Bus Pack</option><option value=\"3\">BMW Mini-E</option><option value=\"4\">BMW PHEV</option></select></div>
+  <div class=\"row\"><label>Balance Inhibit</label><select id=\"canInhibitEnabled\"><option value=\"0\">GPIO only</option><option value=\"1\">GPIO+CAN charger</option></select></div>
+  <div class=\"row\"><label>Charger HB ID</label><input type=\"text\" id=\"chargerHeartbeatID\" style=\"width:80px\" placeholder=\"0x305\"></div>
+  <div class=\"row\"><label>Charger active</label><span id=\"chargerStatus\" style=\"font-weight:bold\">--</span></div>
+    <h4>Per-Module Cell Count Override</h4>
+    <p style="font-size:.72rem;color:var(--sub);margin-bottom:.7rem">
+      Global default: <strong>${globalCells} cells</strong>
+      (change via &#8220;Cells per module&#8221; field above).
+      Set a module to <strong>0</strong> to inherit the global default.
+      Only modules with an active override are highlighted.
+    </p>
+    <div class="mod-cell-grid" id="modCellGrid">`;
   const maxMod=s.maxModules||20;
   for(let i=1;i<=maxMod;i++){
     const ov=mc[i]||0;
@@ -450,6 +436,7 @@ function renderSettingsForm(){
         <option value="4" ${ov===4?'selected':''}>4S</option>
         <option value="5" ${ov===5?'selected':''}>5S</option>
         <option value="6" ${ov===6?'selected':''}>6S</option>
+        <option value="8" ${ov===8?'selected':''}>8S</option>
         <option value="12" ${ov===12?'selected':''}>12S</option>
         <option value="16" ${ov===16?'selected':''}>16S</option>
       </select>
@@ -457,15 +444,7 @@ function renderSettingsForm(){
   }
   html+='</div></div>';
 
-  // Inject HTML into DOM first, THEN set select values — elements must exist before assignment
   document.getElementById('settForm').innerHTML=html;
-
-  const ct=document.getElementById('cmuType');
-  if(ct) ct.value=String(s.cmuType||0);
-  const ci=document.getElementById('canInhibitEnabled');
-  if(ci) ci.value=String(s.canInhibitEnabled?1:0);
-  const chgId=document.getElementById('chargerHeartbeatID');
-  if(chgId) chgId.value='0x'+(s.chargerHeartbeatID||0x305).toString(16).toUpperCase();
 }
 
 async function applySettings(){
@@ -590,12 +569,11 @@ bool WiFiManager::begin()
             mo["faulted"]   = (realFaults > 0);
             mo["faultCode"] = m.getFaults();
             mo["alertCode"] = m.getAlerts();
-            mo["numCells"]  = bms.getModuleCells(i);
+            mo["numCells"]  = bms.getModuleCells(i);  // per-module override or global default
             mo["t1"]        = serialized(String(m.getTemperature(0), 1));
             mo["t2"]        = serialized(String(m.getTemperature(1), 1));
             JsonArray cells = mo["cells"].to<JsonArray>();
-            int nc = bms.getModuleCells(i);
-            for (int c = 0; c < nc; c++)
+            for (int c = 0; c < 6; c++)
                 cells.add(serialized(String(m.getCellVoltage(c), 3)));
         }
 
@@ -738,7 +716,7 @@ bool WiFiManager::begin()
                 for (JsonVariant v : mc) {
                     if (idx <= MAX_MODULE_ADDR) {
                         int cv = v.as<int>();
-                        // 0 = inherit global, 4/5/6 = explicit override
+                        // 0 = inherit global, 4/5/6/8/12/16 = explicit override
                         if (cv == 0 || (cv >= 4 && cv <= 16)) {
                             settings.moduleCells[idx] = (uint8_t)cv;
                             changed = true;
@@ -765,17 +743,12 @@ bool WiFiManager::begin()
 
     server->begin();
     running = true;
-    gvretServer.begin();
-    gvretServer.setNoDelay(true);
     Logger::console("HTTP server started: http://%s", ipAddr.c_str());
-    Logger::console("GVRET server started: %s:23 (SavvyCAN)", ipAddr.c_str());
     return true;
 }
 
 void WiFiManager::end()
 {
-    if (gvretClientConnected) { gvretClient.stop(); gvretClientConnected = false; }
-    gvretServer.stop();
     if (server) { server->end(); delete server; server = nullptr; }
     WiFi.softAPdisconnect(true);
     running = false;
@@ -784,106 +757,4 @@ void WiFiManager::end()
 
 bool WiFiManager::isRunning() { return running; }
 String WiFiManager::getIP()   { return ipAddr;  }
-
-void WiFiManager::loop()
-{
-    if (running) gvretLoop();
-}
-
-// ---------------------------------------------------------------------------
-// gvretLoop — accept SavvyCAN connections and handle handshake
-//
-// GVRET protocol (port 23):
-//   Client sends 0xE0      → reply 0xE0 + "M5DialBMS\0"
-//   Client sends 0xF1 0x06 → reply 0xF1 0x06 + "500000\0"
-//   Client sends 0xF1 0x09 → reply 0xF1 0x09 0x00 (single-wire disabled)
-//   CAN frames pushed via gvretPushFrame() as they arrive from wifiLogCAN()
-// ---------------------------------------------------------------------------
-void WiFiManager::gvretLoop()
-{
-    // Accept new client — only one at a time
-    if (!gvretClientConnected || !gvretClient.connected()) {
-        WiFiClient newClient = gvretServer.available();
-        if (newClient) {
-            if (gvretClientConnected) gvretClient.stop();
-            gvretClient = newClient;
-            gvretClientConnected = true;
-            Logger::console("GVRET: SavvyCAN connected from %s",
-                            gvretClient.remoteIP().toString().c_str());
-        } else {
-            gvretClientConnected = false;
-            return;
-        }
-    }
-
-    // Handle incoming commands
-    while (gvretClient.available()) {
-        uint8_t b = gvretClient.read();
-        switch (b) {
-            case 0xE0: {
-                uint8_t reply[12];
-                reply[0] = 0xE0;
-                const char *name = "M5DialBMS";
-                memcpy(reply + 1, name, strlen(name) + 1);
-                gvretClient.write(reply, 1 + strlen(name) + 1);
-                break;
-            }
-            case 0xF1: {
-                if (!gvretClient.available()) break;
-                uint8_t cmd = gvretClient.read();
-                if (cmd == 0x06) {
-                    uint8_t reply[9] = {0xF1, 0x06};
-                    const char *spd = "500000";
-                    memcpy(reply + 2, spd, strlen(spd) + 1);
-                    gvretClient.write(reply, 2 + strlen(spd) + 1);
-                } else if (cmd == 0x09) {
-                    uint8_t reply[3] = {0xF1, 0x09, 0x00};
-                    gvretClient.write(reply, 3);
-                }
-                break;
-            }
-            default: break;
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// gvretPushFrame — send one CAN frame to SavvyCAN in GVRET binary format
-//
-// Frame layout (14 bytes):
-//   [0]     0xF1  — GVRET frame marker
-//   [1]     0x00  — sub-type: CAN frame
-//   [2-5]   timestamp µs, little-endian
-//   [6-9]   CAN ID, little-endian (bit 31 set = extended)
-//   [10]    DLC (0-8)
-//   [11-13] data (always 8 bytes, zero-padded — wait, 3 bytes shown here)
-// Note: SavvyCAN expects the full 14-byte record including 8 data bytes
-// Total: 2 + 4 + 4 + 1 + 8 = 19 bytes. Buffer sized accordingly.
-// ---------------------------------------------------------------------------
-void WiFiManager::gvretPushFrame(uint32_t id, uint8_t *data, uint8_t len,
-                                  bool extended)
-{
-    if (!gvretClientConnected || !gvretClient.connected()) return;
-
-    uint8_t buf[19];
-    buf[0] = 0xF1;
-    buf[1] = 0x00;
-
-    uint32_t ts = micros();
-    buf[2] = ts & 0xFF;
-    buf[3] = (ts >> 8) & 0xFF;
-    buf[4] = (ts >> 16) & 0xFF;
-    buf[5] = (ts >> 24) & 0xFF;
-
-    uint32_t idOut = extended ? (id | 0x80000000UL) : id;
-    buf[6]  = idOut & 0xFF;
-    buf[7]  = (idOut >> 8) & 0xFF;
-    buf[8]  = (idOut >> 16) & 0xFF;
-    buf[9]  = (idOut >> 24) & 0xFF;
-
-    buf[10] = len > 8 ? 8 : len;
-    memset(buf + 11, 0, 8);
-    memcpy(buf + 11, data, buf[10]);
-
-    gvretClient.write(buf, 19);
-}
+void WiFiManager::loop()      {}

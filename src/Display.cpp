@@ -1,6 +1,5 @@
 // =============================================================================
-// Display.cpp  v7 - LVGL display manager for TeslaBMS M5Dial
-// Uses LVGL 8.4 with M5GFX 0.2.4 (pinned to avoid M5GFX bundled LVGL9 conflict)
+// Display.cpp  v6 - LVGL display manager for TeslaBMS M5Dial
 //
 // Changes from v5:
 //   - Module page: larger fonts (montserrat_20 cell voltages, montserrat_16 labels)
@@ -63,7 +62,7 @@ static struct {
 // ---------------------------------------------------------------------------
 // Module page — up to 12 cells in 2 columns × 6 rows
 // ---------------------------------------------------------------------------
-#define MAX_CELLS_DISPLAY 12
+#define MAX_CELLS_DISPLAY 16
 static struct {
     lv_obj_t *screen;
     lv_obj_t *titleLabel;
@@ -313,10 +312,13 @@ void Display::buildPackPage()
 }
 
 // ---------------------------------------------------------------------------
-// buildModulePage  v6 - larger fonts, up to 12 cells in 2-col layout
+// buildModulePage  v7 - larger fonts, adaptive cell layout
 //
-// Layout for 6-cell (Tesla): 2 columns x 3 rows, 40px row pitch
-// Layout for 12-cell (i3):   2 columns x 6 rows, 35px row pitch
+// Layout by cell count:
+//   <= 6 cells (Tesla):         2 columns × 3 rows, 40px row pitch
+//   <= 8 cells (PHEV SP44):     2 columns × 4 rows, 33px row pitch
+//   <= 12 cells (BMW i3):       2 columns × 6 rows, 26px row pitch
+//   <= 16 cells (PHEV SP06/41): 4 columns × 4 rows, 33px row pitch, no bars
 // Cells beyond resolved numCells are hidden.
 // ---------------------------------------------------------------------------
 void Display::buildModulePage(int addr)
@@ -333,31 +335,51 @@ void Display::buildModulePage(int addr)
     lv_label_set_text(tl, "Module # --");
     modPage.titleLabel = tl;
 
-    // Adaptive layout: cells arranged in 2 columns.
-    // For <= 6 cells (Tesla): 3 rows, vertically centred — more breathing room.
-    // For  > 6 cells (BMW i3): 6 rows, compact pitch to fit all 12.
-    // All column positions chosen to keep text safely inside the round bezel.
     int activeCells = bms.getModuleCells(addr);
-    int numRows = (activeCells <= 6) ? 3 : 6;
 
-    // Column left-edge x positions
-    const int COL_X_3ROW[2] = {38, 132};  // 3-row: wider columns
-    const int COL_X_6ROW[2] = {30, 128};  // 6-row: slightly tighter
-    const int *COL_X = (numRows == 3) ? COL_X_3ROW : COL_X_6ROW;
+    // Select layout mode
+    // mode 0: <=6  cells — 2 col × 3 row, pitch=36
+    // mode 1: <=8  cells — 2 col × 4 row, pitch=33
+    // mode 2: <=12 cells — 2 col × 6 row, pitch=26
+    // mode 3: <=16 cells — 4 col × 4 row, pitch=33, no bars (too narrow)
+    int mode;
+    if      (activeCells <= 6)  mode = 0;
+    else if (activeCells <= 8)  mode = 1;
+    else if (activeCells <= 12) mode = 2;
+    else                        mode = 3;
 
-    // Row y positions — vertically centred in the ~35..200 content band
-    // 3-row pitch=36: 3*36=108, start=(165-108)/2+35=63
-    // 6-row pitch=26: 6*26=156, start=(165-156)/2+38=42
+    // Column x positions per mode
+    const int COL_X_2[2] = {30, 128};          // 2-column layouts
+    const int COL_X_4[4] = {14, 72, 130, 188}; // 4-column layout
+
+    // Row y positions per mode
     const int ROW_Y_3[3] = {63, 99, 135};
+    const int ROW_Y_4[4] = {45, 78, 111, 144};
     const int ROW_Y_6[6] = {42, 68, 94, 120, 146, 172};
-    const int *ROW_Y = (numRows == 3) ? ROW_Y_3 : ROW_Y_6;
 
     for (int i = 0; i < MAX_CELLS_DISPLAY; i++) {
-        // Column 0: cells 0,2,4,6,8,10   Column 1: cells 1,3,5,7,9,11
-        int col = i % 2;
-        int row = i / 2;
-        int x   = COL_X[col];
-        int y   = (numRows == 3) ? ROW_Y_3[row % 3] : ROW_Y_6[row % 6];
+        int col, row, x, y;
+        bool showBar = true;
+
+        switch (mode) {
+            case 0:  // 2 col × 3 row
+                col = i % 2; row = i / 2;
+                x = COL_X_2[col]; y = ROW_Y_3[row % 3];
+                break;
+            case 1:  // 2 col × 4 row
+                col = i % 2; row = i / 2;
+                x = COL_X_2[col]; y = ROW_Y_4[row % 4];
+                break;
+            case 2:  // 2 col × 6 row
+                col = i % 2; row = i / 2;
+                x = COL_X_2[col]; y = ROW_Y_6[row % 6];
+                break;
+            default: // 4 col × 4 row — no bars (columns too narrow)
+                col = i % 4; row = i / 4;
+                x = COL_X_4[col]; y = ROW_Y_4[row % 4];
+                showBar = false;
+                break;
+        }
 
         // Cell index label "C1"
         lv_obj_t *cl = lv_label_create(scr);
@@ -368,14 +390,14 @@ void Display::buildModulePage(int addr)
         lv_label_set_text(cl, clbuf);
         modPage.cellLabel[i] = cl;
 
-        // Cell voltage value label  — montserrat_20
+        // Cell voltage value label
         lv_obj_t *vl = lv_label_create(scr);
-        lv_obj_add_style(vl, &styleLarge, 0);
+        lv_obj_add_style(vl, showBar ? &styleLarge : &styleMid, 0);
         lv_obj_set_pos(vl, x, y + 12);
         lv_label_set_text(vl, "-.---");
         modPage.cellValLabel[i] = vl;
 
-        // Bar chart — 18px tall, 100px wide per column
+        // Bar chart — hidden in 4-column mode (too narrow)
         lv_obj_t *bar = lv_bar_create(scr);
         lv_obj_set_size(bar, 100, 6);
         lv_obj_set_pos(bar, x, y + 27);
@@ -385,10 +407,12 @@ void Display::buildModulePage(int addr)
         lv_obj_add_style(bar, &styleBarOk, LV_PART_INDICATOR);
         modPage.bar[i] = bar;
 
-        // Hide cells beyond current numCells
+        // Hide cells beyond activeCells, or bars in 4-col mode
         if (i >= activeCells) {
             lv_obj_add_flag(cl,  LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(vl,  LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(bar, LV_OBJ_FLAG_HIDDEN);
+        } else if (!showBar) {
             lv_obj_add_flag(bar, LV_OBJ_FLAG_HIDDEN);
         }
     }

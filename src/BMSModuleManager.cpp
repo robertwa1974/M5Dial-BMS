@@ -455,13 +455,9 @@ float BMSModuleManager::getAvgTemperature()
     int   validModules = 0;
     for (int x = 1; x <= MAX_MODULE_ADDR; x++)
     {
-        if (!modules[x].isExisting()) continue;
-        float t = modules[x].getAvgTemp();
-        // getAvgTemp() returns -100.0 when no sensors pass IgnoreTempThresh.
-        // Also guard against 0.0 which passes the > -70 check but is not valid.
-        if (t > settings.IgnoreTempThresh && t != 0.0f)
+        if (modules[x].isExisting() && modules[x].getAvgTemp() > settings.IgnoreTempThresh)
         {
-            avg += t;
+            avg += modules[x].getAvgTemp();
             validModules++;
         }
     }
@@ -469,8 +465,15 @@ float BMSModuleManager::getAvgTemperature()
     return avg / (float)validModules;
 }
 
-float BMSModuleManager::getHighTemperature() { return highestPackTemp; }
-float BMSModuleManager::getLowTemperature()  { return lowestPackTemp;  }
+float BMSModuleManager::getHighTemperature()
+{
+    return highestPackTemp;
+}
+
+float BMSModuleManager::getLowTemperature()
+{
+    return lowestPackTemp;
+}
 
 float BMSModuleManager::getAvgCellVolt()
 {
@@ -608,26 +611,19 @@ bool BMSModuleManager::getAutoBalance()                { return autoBalance;    
 int BMSModuleManager::getModuleCells(int addr)
 {
     if (addr < 1 || addr > MAX_MODULE_ADDR) return 6;
-
-    // BMW CAN variants: fixed cell counts determined by hardware, not settings
-    switch (settings.cmuType) {
-        case CMU_BMW_I3:
-        case CMU_BMW_I3_BUS:
-        case CMU_BMW_MINIE:
-            modules[addr].setNumCells(BMW_I3_CELLS_PER_MOD);   // 12
-            return BMW_I3_CELLS_PER_MOD;
-        case CMU_BMW_PHEV:
-            modules[addr].setNumCells(BMW_PHEV_CELLS_PER_MOD); // 16
-            return BMW_PHEV_CELLS_PER_MOD;
-        default:
-            break;
+    // BMW i3: always 12 cells per module regardless of settings
+    if (settings.cmuType == CMU_BMW_I3) {
+        modules[addr].setNumCells(BMW_I3_CELLS_PER_MOD);
+        return BMW_I3_CELLS_PER_MOD;
     }
-
-    // Tesla UART: per-module override takes priority, then global numCells.
-    // Ceiling raised to 16 to support future variants; Tesla hardware is 4-6.
+    // BMW PHEV: always 16 cells per module (SP44 populates only 0-7, rest zero)
+    if (settings.cmuType == CMU_BMW_PHEV) {
+        modules[addr].setNumCells(BMW_PHEV_CELLS_PER_MOD);
+        return BMW_PHEV_CELLS_PER_MOD;
+    }
     uint8_t ov = settings.moduleCells[addr];
-    int n = (ov >= 1 && ov <= 16) ? (int)ov
-          : ((settings.numCells >= 1 && settings.numCells <= 16) ? (int)settings.numCells : 6);
+    int n = (ov >= 1 && ov <= 6) ? (int)ov
+          : ((settings.numCells >= 1 && settings.numCells <= 6) ? (int)settings.numCells : 6);
     modules[addr].setNumCells(n);
     return n;
 }
@@ -681,17 +677,22 @@ void BMSModuleManager::getAllVoltTempFromCAN()
 // ---------------------------------------------------------------------------
 // getAllVoltTempFromPHEV - populate BMSModule objects from BMW PHEV CAN data
 // Called instead of UART getAllVoltTemp() when cmuType == CMU_BMW_PHEV.
+// Reads PhevSlaveData staging buffers populated by CANManager's RX task.
+// Handles up to BMW_PHEV_MAX_MODS (12) modules with 16 cells and 4 temps each.
 // ---------------------------------------------------------------------------
 void BMSModuleManager::getAllVoltTempFromPHEV()
 {
-    packVolt        = 0.0f;
+    packVolt = 0.0f;
     numFoundModules = 0;
 
     for (int x = 1; x <= BMW_PHEV_MAX_MODS; x++) {
         PhevSlaveData d;
-        if (!can.getPhevSlaveData(x, d)) continue;
+        if (!can.getPhevSlaveData(x, d)) {
+            // No data ever received for this slot
+            continue;
+        }
 
-        bool alive = (millis() - d.lastSeenMs) < 3000;
+        bool alive = (millis() - d.lastSeenMs) < (uint32_t)BMW_PHEV_TIMEOUT_MS;
         modules[x].setExists(alive);
         if (!alive) continue;
 
@@ -701,12 +702,19 @@ void BMSModuleManager::getAllVoltTempFromPHEV()
         float modV = 0.0f;
         for (int c = 0; c < BMW_PHEV_CELLS_PER_MOD; c++) {
             modules[x].setCellVoltage(c, d.cellV[c]);
-            modV += d.cellV[c];
+            if (d.cellV[c] > settings.IgnoreVolt && d.cellV[c] < 5.0f)
+                modV += d.cellV[c];
         }
         modules[x].setModuleVoltage(modV);
-        modules[x].setTemperature(0, d.temp[0]);
-        modules[x].setTemperature(1, d.temp[1]);
-        modules[x].setFaults(d.errorWord > 0 ? 1 : 0);
+
+        // 4 temperature sensors — store all 4; display uses T1/T2
+        for (int t = 0; t < BMW_PHEV_TEMPS_PER_MOD; t++) {
+            modules[x].setTemperature(t, d.temp[t]);
+        }
+
+        // Map 32-bit error word to 8-bit faults field (non-zero = fault)
+        uint8_t faultByte = (d.error != 0) ? 0x01 : 0x00;
+        modules[x].setFaults(faultByte);
         modules[x].setAlerts(0);
 
         packVolt += modV;

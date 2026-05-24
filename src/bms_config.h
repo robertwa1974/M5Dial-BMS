@@ -114,7 +114,7 @@ enum CmuType : uint8_t {
     CMU_BMW_I3       = 1,   // BMW i3 CSC standard (0x3D1-0x3D8 cells, 0x3B1-0x3B8 temps)
     CMU_BMW_I3_BUS   = 2,   // BMW i3 bus-pack variant (0x080 TX keepalive, 0x100-0x17F RX)
     CMU_BMW_MINIE    = 3,   // BMW Mini-E CSC (0x080 TX, 0x0A0-0x17F RX)
-    CMU_BMW_PHEV     = 4,   // BMW PHEV SP06/SP41 — reserved, not yet implemented
+    CMU_BMW_PHEV     = 4,   // BMW PHEV SP06/SP41/SP44 — polled 50ms, 16 cells, 4 temps
 };
 
 // ---------------------------------------------------------------------------
@@ -181,16 +181,23 @@ enum CmuType : uint8_t {
 #define MINIE_CELLS_PER_MOD     12
 
 // ---------------------------------------------------------------------------
-// BMW PHEV SP06/SP41 CSC CAN IDs
+// BMW PHEV SP06/SP41/SP44 CSC CAN IDs
 // Polled master/slave: BMS sends 0x080|slot every BMW_PHEV_CMD_RATE_MS (50ms).
-// One module per call; with 6 modules each module is polled every 300ms.
+// One module per call; with 12 slots polled each module is hit every 600ms.
+// Variants (all use the same on-wire protocol, only module count differs):
+//   SP06 (F30/F15/G30/G12 pre-LCI):  6 modules of 16 cells  → 300ms cycle
+//   SP41 (G12 LCI 745e):              6 modules of 16 cells  → 300ms cycle
+//   SP44 (X5 G05 45e):               12 modules of  8 cells  → 600ms cycle
+// Polling all 12 slots is safe on 6-module packs — modules at unassigned
+// addresses silently ignore the poll. Confirmed on hardware by mane2 on the
+// openinverter forum (BMW BMS modules thread, June 2025).
+//   RX 0x0A0-0x0AF  status/error frames per module (type nibble 0xA)
+//     bytes 0-3 LE = 32-bit error word, bytes 4-5 LE = balstat
 //   RX 0x120-0x17F  cell voltages (6 sub-frame groups per module, LE 14-bit)
 //     type nibble 2-7 of lower byte: sub 0-5, 3 cells each (16 active of 18)
-//     Voltage encoding: lo + (hi & 0x3F) * 256 = millivolts (same as Mini-E)
+//     Voltage encoding: lo + (hi & 0x3F) * 256 = millivolts
 //     Commit condition: framesRx == 0x3F (all 6 sub-frames received)
 //     Cell update suppressed when status frame indicates balancing active
-//   RX 0x0A0-0x0AF  status / error frames (type 0xA per module)
-//     bytes 0-1 BE = errorWord, byte 2 = balstat
 //   RX 0x180-0x18F  temperatures (4 sensors per module)
 //     bytes 0-3: each uint8, value - 40 = degC
 // ---------------------------------------------------------------------------
@@ -201,15 +208,22 @@ enum CmuType : uint8_t {
 #define BMW_PHEV_TEMP_MAX       0x18F   // PHEV: highest temperature frame ID
 #define BMW_PHEV_CMD_BASE       0x080   // PHEV: TX command base (shared with Mini-E/i3bus)
 #define BMW_PHEV_MGMT_ID        0x0A0   // PHEV: management reset TX ID
-#define BMW_PHEV_CELLS_PER_MOD  16      // 16 cells per PHEV CSC module (SP06/SP41)
-#define BMW_PHEV_MAX_MODS       6       // hardware max: 6 CSC modules per bus
+#define BMW_PHEV_CELLS_PER_MOD  16      // up to 16 cells per CSC module (SP44 uses 8 of 16)
+#define BMW_PHEV_TEMPS_PER_MOD  4       // 4 temperature sensors per module
+#define BMW_PHEV_MAX_MODS       12      // hardware max: 12 CSC modules per bus (SP44)
+                                        // SP06/SP41 packs use 6; extra polls are harmless
 #define BMW_PHEV_CMD_RATE_MS    50      // PHEV: command period (ms) — one module per call
+#define BMW_PHEV_TIMEOUT_MS     3000    // module considered offline after this many ms
 #define PHEV_MAX_MODS           BMW_PHEV_MAX_MODS   // alias used by CANManager arrays
 
+// CRC finalxor table — one entry per module index 0..11 (from Tom-evnut/BMWPhevBMS).
+// Used in CANManager::getPhevChecksum() to finalise the CRC8 of each poll frame.
+// All 12 entries needed for SP44 (12 modules); SP06/SP41 only use indices 0..5.
+// Defined in CANManager.cpp; declared extern here to avoid multiple-definition errors.
+extern const uint8_t BMW_PHEV_FINAL_XOR[12];
+
 // ---------------------------------------------------------------------------
-// Shared CRC8 finalxor table (used by both Mini-E and BMWI3BUS TX frames)
-// Indexed by slot (0-7). Defined as a file-scope const in CANManager.cpp.
-// Values: { 0xCF, 0xF5, 0xBB, 0x81, 0x27, 0x1D, 0x53, 0x69 }
+// BMWI3BUS / Mini-E command interval (shared keepalive burst period)
 // ---------------------------------------------------------------------------
 #define BMW_CSC_CMD_INTERVAL_MS  24    // keepalive/command burst period (ms)
 
