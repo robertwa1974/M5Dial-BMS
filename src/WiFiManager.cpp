@@ -20,6 +20,7 @@
 extern BMSModuleManager bms;
 extern EEPROMSettings   settings;
 extern CANManager       can;
+extern WiFiManager      wifi;   // for gvretPushFrame in wifiLogCAN()
 
 static AsyncWebServer *server = nullptr;
 
@@ -43,6 +44,8 @@ void wifiLogCAN(uint32_t id, uint8_t *data, uint8_t len)
     memcpy(canLog[canLogHead].data, data, len < 8 ? len : 8);
     canLogHead = (canLogHead + 1) % CAN_LOG_SIZE;
     if (canLogCount < CAN_LOG_SIZE) canLogCount++;
+    // Push to any connected SavvyCAN/GVRET client
+    wifi.gvretPushFrame(id, data, len, false);
 }
 
 // SimpBMS frame decoder - returns human-readable description
@@ -86,7 +89,9 @@ static String decodeCAN(uint32_t id, uint8_t *d)
     }
 }
 
-WiFiManager::WiFiManager() : running(false), ipAddr("") {}
+WiFiManager::WiFiManager()
+    : running(false), ipAddr(""),
+      gvretServer(23), gvretClientConnected(false) {}
 
 // ---------------------------------------------------------------------------
 // HTML - single file, 3-tab layout
@@ -225,7 +230,7 @@ let activeTab='pack';
 const FIELDS=[
   // group header acts as separator
   ['__g','Pack Topology'],
-  ['numCells',   'Cells per module',    'int',   1, 16, 1],
+  ['numCells',   'Cells per module',    'int',   1,  6, 1],
   ['numSeries',  'Modules in series',   'int',   1, 62, 1],
   ['numParallel','Modules in parallel', 'int',   1, 10, 1],
   ['socLo_V',    'SoC 0% V/module',     'float', 10,30,0.1],
@@ -413,7 +418,7 @@ function renderSettingsForm(){
   // We show all slots 1..maxModules that have an override set, plus allow setting any 1..20
   html+=`<div class="sf-group" style="grid-column:span 2">
   <h3>CMU Type &amp; Balance Inhibit (v6)</h3>
-  <div class=\"row\"><label>CMU Type (reboot)</label><select id=\"cmuType\"><option value=\"0\">Tesla UART</option><option value=\"1\">BMW i3 CAN</option><option value=\"2\">BMW i3 Bus Pack</option><option value=\"3\">BMW Mini-E</option><option value=\"4\">BMW PHEV</option></select></div>
+  <div class=\"row\"><label>CMU Type (reboot)</label><select id=\"cmuType\"><option value=\"0\">Tesla UART</option><option value=\"1\">BMW i3 CAN</option></select></div>
   <div class=\"row\"><label>Balance Inhibit</label><select id=\"canInhibitEnabled\"><option value=\"0\">GPIO only</option><option value=\"1\">GPIO+CAN charger</option></select></div>
   <div class=\"row\"><label>Charger HB ID</label><input type=\"text\" id=\"chargerHeartbeatID\" style=\"width:80px\" placeholder=\"0x305\"></div>
   <div class=\"row\"><label>Charger active</label><span id=\"chargerStatus\" style=\"font-weight:bold\">--</span></div>
@@ -436,9 +441,6 @@ function renderSettingsForm(){
         <option value="4" ${ov===4?'selected':''}>4S</option>
         <option value="5" ${ov===5?'selected':''}>5S</option>
         <option value="6" ${ov===6?'selected':''}>6S</option>
-        <option value="8" ${ov===8?'selected':''}>8S</option>
-        <option value="12" ${ov===12?'selected':''}>12S</option>
-        <option value="16" ${ov===16?'selected':''}>16S</option>
       </select>
     </div>`;
   }
@@ -685,7 +687,7 @@ bool WiFiManager::begin()
             JsonObject j = jdoc.as<JsonObject>();
             bool changed = false;
             // Pack topology
-            if (!j["numCells"].isNull())    { int v=j["numCells"];    if(v>=1&&v<=16)  { settings.numCells=(uint8_t)v;      changed=true; } }
+            if (!j["numCells"].isNull())    { int v=j["numCells"];    if(v>=1&&v<=6)   { settings.numCells=(uint8_t)v;      changed=true; } }
             if (!j["numSeries"].isNull())   { int v=j["numSeries"];   if(v>=1&&v<=62)  { settings.numSeries=(uint8_t)v;     changed=true; } }
             if (!j["numParallel"].isNull()) { int v=j["numParallel"]; if(v>=1&&v<=10)  { settings.numParallel=(uint8_t)v;   changed=true; } }
             if (!j["socLo_V"].isNull())     { float v=j["socLo_V"];   if(v>=10&&v<30)  { settings.socLo=v;                  changed=true; } }
@@ -706,7 +708,7 @@ bool WiFiManager::begin()
             if (!j["batteryID"].isNull())   { int v=j["batteryID"]; if(v>=1&&v<=14) { settings.batteryID=(uint8_t)v; changed=true; } }
             if (!j["logLevel"].isNull())    { int v=j["logLevel"];  if(v>=0&&v<=4)  { settings.logLevel=(uint8_t)v;  changed=true; } }
             // v6: CMU type and balance inhibit
-            if (!j["cmuType"].isNull())          { int v=j["cmuType"]; if(v>=0&&v<=4) { settings.cmuType=(uint8_t)v; changed=true; } }
+            if (!j["cmuType"].isNull())          { int v=j["cmuType"]; if(v==0||v==1) { settings.cmuType=(uint8_t)v; changed=true; } }
             if (!j["canInhibitEnabled"].isNull()) { settings.canInhibitEnabled=(j["canInhibitEnabled"].as<int>()!=0)?1:0; changed=true; }
             if (!j["chargerHeartbeatID"].isNull()) { int v=j["chargerHeartbeatID"]; if(v>0&&v<=0x7FF) { settings.chargerHeartbeatID=(uint32_t)v; changed=true; } }
             // Per-module cell count overrides: array index 1..MAX_MODULE_ADDR
@@ -716,8 +718,8 @@ bool WiFiManager::begin()
                 for (JsonVariant v : mc) {
                     if (idx <= MAX_MODULE_ADDR) {
                         int cv = v.as<int>();
-                        // 0 = inherit global, 4/5/6/8/12/16 = explicit override
-                        if (cv == 0 || (cv >= 4 && cv <= 16)) {
+                        // 0 = inherit global, 4/5/6 = explicit override
+                        if (cv == 0 || (cv >= 4 && cv <= 6)) {
                             settings.moduleCells[idx] = (uint8_t)cv;
                             changed = true;
                         }
@@ -744,11 +746,20 @@ bool WiFiManager::begin()
     server->begin();
     running = true;
     Logger::console("HTTP server started: http://%s", ipAddr.c_str());
+
+    // GVRET/SavvyCAN TCP server on port 23
+    gvretServer.begin();
+    gvretServer.setNoDelay(true);
+    gvretClientConnected = false;
+    Logger::console("GVRET server started: %s:23 (SavvyCAN)", ipAddr.c_str());
+
     return true;
 }
 
 void WiFiManager::end()
 {
+    if (gvretClientConnected) { gvretClient.stop(); gvretClientConnected = false; }
+    gvretServer.stop();
     if (server) { server->end(); delete server; server = nullptr; }
     WiFi.softAPdisconnect(true);
     running = false;
@@ -757,4 +768,86 @@ void WiFiManager::end()
 
 bool WiFiManager::isRunning() { return running; }
 String WiFiManager::getIP()   { return ipAddr;  }
-void WiFiManager::loop()      {}
+
+void WiFiManager::loop()
+{
+    if (!running) return;
+    gvretLoop();
+}
+
+// ---------------------------------------------------------------------------
+// gvretLoop — accept new client, read and discard any inbound bytes.
+// SavvyCAN sends a version request on connect; we respond with GVRET header.
+// ---------------------------------------------------------------------------
+void WiFiManager::gvretLoop()
+{
+    // Accept new client if none connected
+    if (!gvretClientConnected) {
+        WiFiClient newClient = gvretServer.accept();
+        if (newClient) {
+            gvretClient = newClient;
+            gvretClientConnected = true;
+            Logger::info("GVRET: SavvyCAN connected from %s",
+                         gvretClient.remoteIP().toString().c_str());
+            // Send GVRET device description string that SavvyCAN expects
+            // Format: 0xF1 0x01 <description string> 0x00
+            const char *desc = "M5DialBMS";
+            gvretClient.write((uint8_t)0xF1);
+            gvretClient.write((uint8_t)0x01);
+            gvretClient.print(desc);
+            gvretClient.write((uint8_t)0x00);
+        }
+        return;
+    }
+
+    // Check existing client still alive
+    if (!gvretClient.connected()) {
+        gvretClient.stop();
+        gvretClientConnected = false;
+        Logger::info("GVRET: SavvyCAN disconnected");
+        return;
+    }
+
+    // Drain any inbound bytes (SavvyCAN sends keepalive/config frames)
+    while (gvretClient.available()) gvretClient.read();
+}
+
+// ---------------------------------------------------------------------------
+// gvretPushFrame — called by wifiLogCAN() for every TX/RX frame.
+// Encodes one CAN frame in GVRET binary format and sends to SavvyCAN.
+//
+// GVRET frame format (from Collin Kidder's GVRET spec):
+//   Byte 0:    0xF1         (start of frame)
+//   Byte 1:    0x00         (CAN frame command)
+//   Bytes 2-5: timestamp    (little-endian uint32, microseconds)
+//   Bytes 6-9: CAN ID       (little-endian uint32, bit 31 set = extended)
+//   Byte 10:   DLC          (data length 0-8)
+//   Byte 11:   bus number   (0 = CAN0)
+//   Bytes 12+: data bytes   (DLC bytes)
+// ---------------------------------------------------------------------------
+void WiFiManager::gvretPushFrame(uint32_t id, uint8_t *data, uint8_t len,
+                                  bool extended)
+{
+    if (!gvretClientConnected || !gvretClient.connected()) return;
+
+    uint32_t ts  = (uint32_t)(micros());
+    uint32_t eid = extended ? (id | 0x80000000U) : id;
+    uint8_t  dlc = (len <= 8) ? len : 8;
+
+    uint8_t buf[12 + 8];
+    buf[0]  = 0xF1;
+    buf[1]  = 0x00;
+    buf[2]  = (uint8_t)(ts & 0xFF);
+    buf[3]  = (uint8_t)((ts >>  8) & 0xFF);
+    buf[4]  = (uint8_t)((ts >> 16) & 0xFF);
+    buf[5]  = (uint8_t)((ts >> 24) & 0xFF);
+    buf[6]  = (uint8_t)(eid & 0xFF);
+    buf[7]  = (uint8_t)((eid >>  8) & 0xFF);
+    buf[8]  = (uint8_t)((eid >> 16) & 0xFF);
+    buf[9]  = (uint8_t)((eid >> 24) & 0xFF);
+    buf[10] = dlc;
+    buf[11] = 0x00;   // bus 0
+    memcpy(buf + 12, data, dlc);
+
+    gvretClient.write(buf, 12 + dlc);
+}
