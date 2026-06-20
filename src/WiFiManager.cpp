@@ -102,7 +102,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TeslaBMS</title>
+<title>M5Dial BMS</title>
 <style>
 :root{--ok:#22c55e;--warn:#f59e0b;--err:#ef4444;--bg:#0f172a;--card:#1e293b;--text:#f1f5f9;--sub:#94a3b8;--border:#334155}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -177,7 +177,7 @@ h1{text-align:center;font-size:1.3rem;padding:1rem;color:var(--ok)}
 </style>
 </head>
 <body>
-<h1>&#9889; TeslaBMS Dashboard</h1>
+<h1>&#9889; M5Dial BMS</h1>
 <div class="tabs">
   <div class="tab active" onclick="switchTab('pack')">Pack &amp; Modules</div>
   <div class="tab" onclick="switchTab('can')">CAN Feed</div>
@@ -379,7 +379,56 @@ async function fetchSettings(){
     currentSettings=await r.json();
     renderSettingsForm();
     document.getElementById('settStatus').textContent='';
-  }catch(e){document.getElementById('settStatus').textContent='Load error: '+e.message;}
+    document.getElementById('settStatus').style.color='var(--sub)';
+  }catch(e){
+    document.getElementById('settStatus').textContent=
+      'Connection lost (device rebooting?) — retrying...';
+    document.getElementById('settStatus').style.color='var(--warn)';
+    setTimeout(fetchSettings, 1500);
+  }
+}
+
+// pollForReboot - called after a cmuType (or other reboot-requiring) save.
+// Waits for the device to actually drop offline, then come back, then
+// forces one fresh fetch. This avoids two failure modes of naive polling:
+//   - refreshing too early, while the old firmware is still running and
+//     would just show the pre-reboot value again
+//   - never refreshing at all if the user reboots well after the save
+//     (e.g. walks away, comes back later) since a plain setTimeout would
+//     have long since stopped retrying
+async function pollForReboot(){
+  let sawOffline = false;
+  const maxWaitMs = 120000;   // give up after 2 minutes
+  const intervalMs = 1000;
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < maxWaitMs) {
+    await new Promise(res => setTimeout(res, intervalMs));
+    try {
+      const r = await fetch('/api/settings');
+      if (!r.ok) throw new Error('bad status');
+      const data = await r.json();
+      if (sawOffline) {
+        // Device was down, now it's back - this is the post-reboot state
+        currentSettings = data;
+        renderSettingsForm();
+        document.getElementById('settStatus').textContent =
+          'Device rebooted — settings refreshed.';
+        document.getElementById('settStatus').style.color='var(--ok)';
+        toast('Device back online, settings refreshed');
+        return;
+      }
+      // Still online and hasn't gone down yet - keep waiting for the
+      // actual reboot, don't refresh on stale pre-reboot data.
+    } catch (e) {
+      sawOffline = true;
+      document.getElementById('settStatus').textContent =
+        'Device offline, waiting for reboot to complete...';
+    }
+  }
+  document.getElementById('settStatus').textContent =
+    'Gave up waiting for reboot. Reload the page once the device is back.';
+  document.getElementById('settStatus').style.color='var(--err)';
 }
 
 function renderSettingsForm(){
@@ -405,20 +454,15 @@ function renderSettingsForm(){
   if(inGroup) html+='</div></div>';
 
   // Per-module cell count section - only show modules that exist (have been found)
-  // v6 CMU / inhibit fields
-  const ct=document.getElementById('cmuType');
-  if(ct) ct.value=String(s.cmuType||0);
-  const ci=document.getElementById('canInhibitEnabled');
-  if(ci) ci.value=String(s.canInhibitEnabled?1:0);
-  const chgId=document.getElementById('chargerHeartbeatID');
-  if(chgId) chgId.value='0x'+(s.chargerHeartbeatID||0x305).toString(16).toUpperCase();
+  // v6/v7 CMU / inhibit fields - values are applied AFTER innerHTML below,
+  // since these elements don't exist in the DOM until that assignment runs.
   const mc=s.moduleCells||[];
   const globalCells=s.numCells||6;
   // Collect which module slots are nonzero-override OR are found modules
   // We show all slots 1..maxModules that have an override set, plus allow setting any 1..20
   html+=`<div class="sf-group" style="grid-column:span 2">
-  <h3>CMU Type &amp; Balance Inhibit (v6)</h3>
-  <div class=\"row\"><label>CMU Type (reboot)</label><select id=\"cmuType\"><option value=\"0\">Tesla UART</option><option value=\"1\">BMW i3 CAN</option></select></div>
+  <h3>CMU Type &amp; Balance Inhibit (v7)</h3>
+  <div class=\"row\"><label>CMU Type (reboot)</label><select id=\"cmuType\"><option value=\"0\">Tesla UART</option><option value=\"1\">BMW i3 CAN</option><option value=\"2\">BMW i3 Bus Pack</option><option value=\"3\">BMW Mini-E</option><option value=\"4\">BMW PHEV SP06/SP41/SP44</option></select></div>
   <div class=\"row\"><label>Balance Inhibit</label><select id=\"canInhibitEnabled\"><option value=\"0\">GPIO only</option><option value=\"1\">GPIO+CAN charger</option></select></div>
   <div class=\"row\"><label>Charger HB ID</label><input type=\"text\" id=\"chargerHeartbeatID\" style=\"width:80px\" placeholder=\"0x305\"></div>
   <div class=\"row\"><label>Charger active</label><span id=\"chargerStatus\" style=\"font-weight:bold\">--</span></div>
@@ -441,12 +485,26 @@ function renderSettingsForm(){
         <option value="4" ${ov===4?'selected':''}>4S</option>
         <option value="5" ${ov===5?'selected':''}>5S</option>
         <option value="6" ${ov===6?'selected':''}>6S</option>
+        <option value="8" ${ov===8?'selected':''}>8S</option>
+        <option value="12" ${ov===12?'selected':''}>12S</option>
+        <option value="16" ${ov===16?'selected':''}>16S</option>
       </select>
     </div>`;
   }
   html+='</div></div>';
 
   document.getElementById('settForm').innerHTML=html;
+
+  // Now that the select/input elements actually exist in the DOM, set
+  // their values from the loaded settings. Doing this before the innerHTML
+  // assignment above was a no-op (getElementById returned null), which is
+  // why cmuType always silently fell back to its first <option> (Tesla).
+  const ct=document.getElementById('cmuType');
+  if(ct) ct.value=String(s.cmuType||0);
+  const ci=document.getElementById('canInhibitEnabled');
+  if(ci) ci.value=String(s.canInhibitEnabled?1:0);
+  const chgId=document.getElementById('chargerHeartbeatID');
+  if(chgId) chgId.value='0x'+(s.chargerHeartbeatID||0x305).toString(16).toUpperCase();
 }
 
 async function applySettings(){
@@ -483,8 +541,18 @@ async function applySettings(){
     if(j.ok){
       document.getElementById('settStatus').textContent='Saved at '+new Date().toLocaleTimeString();
       toast('Settings saved!');
-      // Reload to confirm round-trip
-      setTimeout(fetchSettings,400);
+      const ctEl=document.getElementById('cmuType');
+      const cmuChanged = ctEl && parseInt(ctEl.value) !== (currentSettings.cmuType||0);
+      if (cmuChanged) {
+        toast('CMU type changed — power-cycle the device to apply, then this page will refresh automatically');
+        document.getElementById('settStatus').textContent =
+          'CMU type saved. Reboot the device, then wait — this page will detect it and refresh.';
+        document.getElementById('settStatus').style.color='var(--warn)';
+        pollForReboot();
+      } else {
+        // Reload to confirm round-trip
+        setTimeout(fetchSettings,400);
+      }
     } else {
       document.getElementById('settStatus').textContent='Error: '+j.error;
       toast('Save failed',false);
@@ -571,11 +639,12 @@ bool WiFiManager::begin()
             mo["faulted"]   = (realFaults > 0);
             mo["faultCode"] = m.getFaults();
             mo["alertCode"] = m.getAlerts();
-            mo["numCells"]  = bms.getModuleCells(i);  // per-module override or global default
+            int mCells = bms.getModuleCells(i);
+            mo["numCells"]  = mCells;  // per-module override or global default
             mo["t1"]        = serialized(String(m.getTemperature(0), 1));
             mo["t2"]        = serialized(String(m.getTemperature(1), 1));
             JsonArray cells = mo["cells"].to<JsonArray>();
-            for (int c = 0; c < 6; c++)
+            for (int c = 0; c < mCells; c++)
                 cells.add(serialized(String(m.getCellVoltage(c), 3)));
         }
 
@@ -707,8 +776,8 @@ bool WiFiManager::begin()
             if (!j["wifiEnabled"].isNull()) { settings.wifiEnabled=(j["wifiEnabled"].as<int>()!=0)?1:0; changed=true; }
             if (!j["batteryID"].isNull())   { int v=j["batteryID"]; if(v>=1&&v<=14) { settings.batteryID=(uint8_t)v; changed=true; } }
             if (!j["logLevel"].isNull())    { int v=j["logLevel"];  if(v>=0&&v<=4)  { settings.logLevel=(uint8_t)v;  changed=true; } }
-            // v6: CMU type and balance inhibit
-            if (!j["cmuType"].isNull())          { int v=j["cmuType"]; if(v==0||v==1) { settings.cmuType=(uint8_t)v; changed=true; } }
+            // v7: CMU type and balance inhibit
+            if (!j["cmuType"].isNull())          { int v=j["cmuType"]; if(v>=0&&v<=4) { settings.cmuType=(uint8_t)v; changed=true; } }
             if (!j["canInhibitEnabled"].isNull()) { settings.canInhibitEnabled=(j["canInhibitEnabled"].as<int>()!=0)?1:0; changed=true; }
             if (!j["chargerHeartbeatID"].isNull()) { int v=j["chargerHeartbeatID"]; if(v>0&&v<=0x7FF) { settings.chargerHeartbeatID=(uint32_t)v; changed=true; } }
             // Per-module cell count overrides: array index 1..MAX_MODULE_ADDR
@@ -718,8 +787,8 @@ bool WiFiManager::begin()
                 for (JsonVariant v : mc) {
                     if (idx <= MAX_MODULE_ADDR) {
                         int cv = v.as<int>();
-                        // 0 = inherit global, 4/5/6 = explicit override
-                        if (cv == 0 || (cv >= 4 && cv <= 6)) {
+                        // 0 = inherit global, 4/5/6 = Tesla, 8 = PHEV SP44, 12 = i3/Mini-E/i3-Bus, 16 = PHEV SP06/SP41
+                        if (cv == 0 || cv == 4 || cv == 5 || cv == 6 || cv == 8 || cv == 12 || cv == 16) {
                             settings.moduleCells[idx] = (uint8_t)cv;
                             changed = true;
                         }

@@ -64,6 +64,10 @@ public:
     bool getI3SlaveData(int addr, I3SlaveData &out);
     void sendI3WakeFrame();
 
+    // TX - BMWI3BUS periodic command (CMU_BMW_I3_BUS, called from periodic task)
+    // Sends confirmed SME format: C7 10 00 [D4] 20 00 [counter] [CRC] on 0x080-0x087
+    void sendBMWI3BUSCommand();
+
     // BMW PHEV slave data
     bool getPhevSlaveData(int slot, PhevSlaveData &out);
 
@@ -71,6 +75,7 @@ private:
     bool         running;
     TaskHandle_t rxTaskHandle;
     TaskHandle_t phevCmdTaskHandle;   // PHEV poll task (nullptr in non-PHEV modes)
+    TaskHandle_t i3BusCmdTaskHandle;  // BMWI3BUS periodic command task (nullptr otherwise)
 
     uint32_t     lastChargerSeen;
     float        canCurrentA;
@@ -97,9 +102,15 @@ private:
     uint8_t  phevTestCycle;  // 0..4, ramps up to enable voltage+temp measurement
     bool     phevBalCells;   // true = include balance target voltage in command
 
-    // PHEV CRC helper
+    // PHEV CRC helper (also reused for BMWI3BUS command checksum - same
+    // BMW_PHEV_FINAL_XOR table, confirmed identical to T-CAN485's miniE_finalxor)
     CRC8    phevCrc8;
     uint8_t getPhevChecksum(uint32_t id, uint8_t *buf, int modIdx);
+
+    // BMWI3BUS command counter (independent of PHEV's cycle state)
+    uint16_t bmwI3Bus_counter;   // cycle count: 0-3=init, 4+=steady state
+    uint32_t i3BusLastReplySeenMs;  // millis() of the last real 0x100-0x1FF reply
+    uint32_t i3BusTxStartMs;        // millis() when steady TX began (for backoff timing)
 
     // PHEV TX
     void sendPhevCommand();
@@ -108,4 +119,5 @@ private:
     // FreeRTOS tasks
     static void rxTaskFn(void *param);
     static void phevCmdTaskFn(void *param);
+    static void i3BusCmdTaskFn(void *param);
 };

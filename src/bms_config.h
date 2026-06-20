@@ -220,6 +220,11 @@ enum CmuType : uint8_t {
 // Used in CANManager::getPhevChecksum() to finalise the CRC8 of each poll frame.
 // All 12 entries needed for SP44 (12 modules); SP06/SP41 only use indices 0..5.
 // Defined in CANManager.cpp; declared extern here to avoid multiple-definition errors.
+//
+// Also reused (same table, same function) for BMWI3BUS and Mini-E command
+// checksums: confirmed byte-identical to the T-CAN485 reference's local
+// miniE_finalxor[12] table, so one shared source of truth here rather than
+// duplicating it. Revert to a separate table if the variants ever diverge.
 extern const uint8_t BMW_PHEV_FINAL_XOR[12];
 
 // ---------------------------------------------------------------------------

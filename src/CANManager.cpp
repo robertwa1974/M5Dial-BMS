@@ -25,8 +25,10 @@ const uint8_t BMW_PHEV_FINAL_XOR[12] = {
 
 CANManager::CANManager()
     : running(false), rxTaskHandle(nullptr), phevCmdTaskHandle(nullptr),
+      i3BusCmdTaskHandle(nullptr),
       lastChargerSeen(0), canCurrentA(0.0f), externalDeviceSeen(false),
-      phevNextMod(0), phevMesCycle(0), phevTestCycle(0), phevBalCells(false)
+      phevNextMod(0), phevMesCycle(0), phevTestCycle(0), phevBalCells(false),
+      bmwI3Bus_counter(0), i3BusLastReplySeenMs(0), i3BusTxStartMs(0)
 {
     memset(i3data,   0, sizeof(i3data));
     memset(i3acc,    0, sizeof(i3acc));
@@ -72,6 +74,19 @@ bool CANManager::begin()
         sendI3WakeFrame();
     }
 
+    // BMW i3 Bus Pack: start periodic command task (no enumeration handshake
+    // needed - modules respond to fixed slot addresses on a flat CAN bus).
+    if (settings.cmuType == CMU_BMW_I3_BUS) {
+        i3BusTxStartMs       = millis();
+        i3BusLastReplySeenMs = 0;
+        xTaskCreatePinnedToCore(
+            i3BusCmdTaskFn, "I3BUS_CMD", 3072, this, 4, &i3BusCmdTaskHandle, 0);
+        Logger::info("CAN: BMWI3BUS mode — command task running (0x%03X..0x%03X every %dms)",
+                     BMW_CSC_CMD_BASE,
+                     BMW_CSC_CMD_BASE + BMW_I3_MAX_MODS - 1,
+                     BMW_CSC_CMD_INTERVAL_MS);
+    }
+
     // BMW PHEV: clear stale module IDs then start poll task
     if (settings.cmuType == CMU_BMW_PHEV) {
         sendPhevResetIDs();
@@ -95,6 +110,7 @@ void CANManager::end()
     if (!running) return;
     running = false;
     if (phevCmdTaskHandle) { vTaskDelete(phevCmdTaskHandle); phevCmdTaskHandle = nullptr; }
+    if (i3BusCmdTaskHandle) { vTaskDelete(i3BusCmdTaskHandle); i3BusCmdTaskHandle = nullptr; }
     if (rxTaskHandle)      { vTaskDelete(rxTaskHandle);      rxTaskHandle      = nullptr; }
     twai_stop();
     twai_driver_uninstall();
@@ -160,6 +176,19 @@ void CANManager::phevCmdTaskFn(void *param)
 }
 
 // ---------------------------------------------------------------------------
+// i3BusCmdTaskFn - FreeRTOS task: send BMWI3BUS keepalive/command burst
+// ---------------------------------------------------------------------------
+void CANManager::i3BusCmdTaskFn(void *param)
+{
+    CANManager *self = (CANManager *)param;
+    while (self->running) {
+        self->sendBMWI3BUSCommand();
+        vTaskDelay(pdMS_TO_TICKS(BMW_CSC_CMD_INTERVAL_MS));
+    }
+    vTaskDelete(nullptr);
+}
+
+// ---------------------------------------------------------------------------
 // processRxFrame
 // ---------------------------------------------------------------------------
 void CANManager::processRxFrame(const twai_message_t &msg)
@@ -202,6 +231,85 @@ void CANManager::processRxFrame(const twai_message_t &msg)
         if (mod < 1 || mod >= I3_MAX_MODS || dlc < 4) return;
         i3data[mod].temp[0] = (int16_t)((msg.data[0] << 8) | msg.data[1]) * 0.1f;
         i3data[mod].temp[1] = (int16_t)((msg.data[2] << 8) | msg.data[3]) * 0.1f;
+        return;
+    }
+
+    // -----------------------------------------------------------------------
+    // BMW i3 CSC (BMWI3BUS variant) - confirmed protocol from SME capture
+    // (ported from validated T-CAN485 reference implementation)
+    //
+    // Frame ID structure: upper byte = type, lower nibble = module address (0-based)
+    //   0x10N = CSC heartbeat/status (N = module addr)
+    //   0x11N = CSC init/ack
+    //   0x12N = cells 1-3   (LE 16-bit, 1mV/bit, D7=0, D8=CRC)
+    //   0x13N = cells 4-6
+    //   0x14N = cells 7-9
+    //   0x15N = cells 10-12
+    //   0x16N = raw NTC ADC values (3x LE 16-bit thermistors, D7=0, D8=CRC)
+    //   0x17N = decoded status2 (D5 = temperature + 40 = degC)
+    //   0x1CN = balance/fault status flags
+    //   0x1DN = additional status flags
+    //
+    // Gated on CMU_BMW_I3_BUS to avoid mis-decoding standard i3/Mini-E/PHEV
+    // frames that may share parts of this ID range.
+    // -----------------------------------------------------------------------
+    if (settings.cmuType == CMU_BMW_I3_BUS &&
+        id >= BMWI3BUS_CELL_BASE && id <= BMWI3BUS_FRAME_MAX)
+    {
+        int mod_addr = (int)(id & 0x00F);         // lower nibble = module address
+        int type     = (int)(id & 0x1F0) >> 4;    // bits[7:4] = frame type
+        int mod      = mod_addr + 1;               // 1-based slot
+        if (mod < 1 || mod >= I3_MAX_MODS) {
+            wifiLogCAN(id, (uint8_t *)msg.data, dlc);
+            return;
+        }
+        i3BusLastReplySeenMs = millis();
+
+        // Cell voltage frames: type 0x12-0x15, 3 cells each, LE 16-bit, 1mV/bit
+        if (type >= 0x12 && type <= 0x15 && dlc >= 6) {
+            int sub  = type - 0x12;  // 0=cells1-3, 1=cells4-6, 2=cells7-9, 3=cells10-12
+            int base = sub * 3;
+            for (int c = 0; c < 3; c++) {
+                uint16_t raw = (uint16_t)msg.data[c * 2] |
+                               ((uint16_t)msg.data[c * 2 + 1] << 8);
+                if (raw > 0 && raw < 5000) {
+                    i3acc[mod].cells[base + c] = raw * 0.001f;
+                }
+            }
+            i3acc[mod].framesRx |= (1 << sub);
+            if (i3acc[mod].framesRx == 0x0F) {
+                memcpy(i3data[mod].cellV, i3acc[mod].cells, sizeof(i3acc[mod].cells));
+                i3data[mod].fresh      = true;
+                i3data[mod].lastSeenMs = millis();
+                i3acc[mod].framesRx    = 0;
+            }
+            wifiLogCAN(id, (uint8_t *)msg.data, dlc);
+            return;
+        }
+
+        // Decoded temperature frame: type 0x17, D5 = temp + 40 (degC)
+        if (type == 0x17 && dlc >= 5) {
+            i3data[mod].temp[0]    = (float)msg.data[4] - 40.0f;
+            i3data[mod].temp[1]    = i3data[mod].temp[0];
+            i3data[mod].lastSeenMs = millis();
+            wifiLogCAN(id, (uint8_t *)msg.data, dlc);
+            return;
+        }
+
+        // Raw NTC ADC frame: type 0x16 — diagnostic only, not consumed downstream
+        if (type == 0x16 && dlc >= 6) {
+            wifiLogCAN(id, (uint8_t *)msg.data, dlc);
+            return;
+        }
+
+        // Heartbeat: type 0x10 — keep module alive timestamp
+        if (type == 0x10) {
+            i3data[mod].lastSeenMs = millis();
+            wifiLogCAN(id, (uint8_t *)msg.data, dlc);
+            return;
+        }
+
+        wifiLogCAN(id, (uint8_t *)msg.data, dlc);
         return;
     }
 
@@ -444,6 +552,75 @@ void CANManager::sendI3WakeFrame()
 }
 
 // ---------------------------------------------------------------------------
+// sendBMWI3BUSCommand  (ported from validated T-CAN485 reference)
+//
+// Confirmed SME TX format from CAN capture:
+//   IDs:  0x080-0x087 (one per CSC slot, addresses 0-7)
+//   Data: C7 10 00 [D4] 20 00 [counter] [CRC]
+//   CRC:  reuses getPhevChecksum()/phevCrc8 — same algorithm and finalxor
+//         table as T-CAN485's miniEChecksum(), confirmed byte-identical.
+//
+// Init sequence (D4 progression, first 4 cycles):
+//   Cycle 0: D4=0x00, counter=0x10
+//   Cycle 1: D4=0x00, counter=0x20
+//   Cycle 2: D4=0x00, counter=0x34
+//   Cycle 3: D4=0x10, counter=0x40
+//   Cycle 4+: D4=0x50, counter increments 0x10 per cycle (steady state)
+// ---------------------------------------------------------------------------
+void CANManager::sendBMWI3BUSCommand()
+{
+    if (!running) return;
+
+    // Backoff: give modules a grace window to wake and start replying to the
+    // init sequence. If nothing has ever replied once that window elapses,
+    // stop hammering an empty bus at BMW_CSC_CMD_INTERVAL_MS (24ms) - that
+    // sustained TX-with-zero-ACK pressure was driving the controller into a
+    // continuous bus-off/recovery loop with no module connected. Once
+    // backed off, this function still gets called every BMW_CSC_CMD_INTERVAL_MS
+    // by i3BusCmdTaskFn, but only actually transmits 1-in-N of those calls.
+    static const uint32_t BMW_I3_BUS_TX_GRACE_MS    = 3000; // initial full-rate window
+    static const uint32_t BMW_I3_BUS_TX_BACKOFF_DIV = 40;   // 1-in-40 calls once backed off (~1s @ 24ms)
+    bool everReplied = (i3BusLastReplySeenMs != 0);
+    bool inGraceWindow = (millis() - i3BusTxStartMs) < BMW_I3_BUS_TX_GRACE_MS;
+    if (!everReplied && !inGraceWindow) {
+        static uint32_t skipCounter = 0;
+        skipCounter++;
+        if (skipCounter % BMW_I3_BUS_TX_BACKOFF_DIV != 0) return;
+    }
+
+    uint8_t d4;
+    uint8_t counter;
+
+    // Init sequence: 4 special cycles before steady state
+    static const uint8_t init_d4[4]      = { 0x00, 0x00, 0x00, 0x10 };
+    static const uint8_t init_counter[4] = { 0x10, 0x20, 0x34, 0x40 };
+
+    if (bmwI3Bus_counter < 4) {
+        d4      = init_d4[bmwI3Bus_counter];
+        counter = init_counter[bmwI3Bus_counter];
+    } else {
+        d4      = 0x50;
+        counter = (uint8_t)(0x40 + ((bmwI3Bus_counter - 3) * 0x10));
+    }
+
+    for (uint8_t slot = 0; slot < BMW_I3_MAX_MODS; slot++) {
+        uint32_t msgId = BMW_CSC_CMD_BASE | slot;
+        uint8_t buf[8];
+        buf[0] = 0xC7;
+        buf[1] = 0x10;
+        buf[2] = 0x00;
+        buf[3] = d4;
+        buf[4] = 0x20;
+        buf[5] = 0x00;
+        buf[6] = counter;
+        buf[7] = getPhevChecksum(msgId, buf, (int)slot);
+        sendFrame(msgId, buf, 8);
+    }
+
+    bmwI3Bus_counter++;
+}
+
+// ---------------------------------------------------------------------------
 // sendFrame — state guard + non-blocking TX
 // ---------------------------------------------------------------------------
 void CANManager::sendFrame(uint32_t id, uint8_t *data, uint8_t len)
@@ -479,6 +656,17 @@ void CANManager::sendFrame(uint32_t id, uint8_t *data, uint8_t len)
 void CANManager::sendBatterySummary()
 {
     if (!running) return;
+
+    // Guard: do not transmit into a bus with no other CAN node present.
+    // With zero peers to ACK, sustained TX (every CAN_SEND_INTERVAL_MS, for
+    // every CMU type, unconditionally) was driving the controller into
+    // bus-off/recovery cycles even on a bare bench setup with nothing
+    // connected. externalDeviceSeen is set the moment any frame outside the
+    // BMW CSC ID range (0x080-0x1FF) is seen - a real Zombieverter, charger,
+    // or Victron device transmits autonomously and continuously, so this
+    // does not create a chicken-and-egg wait (unlike the BMWI3BUS command
+    // path, which only ever gets a reply after being polled first).
+    if (!externalDeviceSeen) return;
 
     float packV   = bms.getPackVoltage();
     float lowC    = bms.getLowCellVolt();
