@@ -141,7 +141,7 @@ static void createStyles()
 // ---------------------------------------------------------------------------
 // begin()
 // ---------------------------------------------------------------------------
-Display::Display() : currentPage(0), dirty(true), initialized(false), lastLvglTick(0) {}
+Display::Display() : currentPage(0), dirty(true), initialized(false), lastLvglTick(0), showSecondHalf(false) {}
 
 bool Display::begin()
 {
@@ -191,6 +191,25 @@ void Display::tick()
     if (elapsed > 0) {
         lv_tick_inc(elapsed);
         lastLvglTick = now;
+    }
+
+    // Alternate cells 1-6 / 7-12 every 1000ms on module pages if module has > 6 cells
+    static uint32_t lastToggleTime = 0;
+    if (currentPage >= 1 && currentPage <= MAX_MODULE_ADDR && bms.getModule(currentPage).isExisting()) {
+        int activeCells = bms.getModuleCells(currentPage);
+        if (activeCells > 6) {
+            if (now - lastToggleTime >= 1000) {
+                lastToggleTime = now;
+                showSecondHalf = !showSecondHalf;
+                dirty = true;
+            }
+        } else {
+            showSecondHalf = false;
+            lastToggleTime = now;
+        }
+    } else {
+        showSecondHalf = false;
+        lastToggleTime = now;
     }
 
     if (dirty) {
@@ -340,12 +359,12 @@ void Display::buildModulePage(int addr)
     // Select layout mode
     // mode 0: <=6  cells — 2 col × 3 row, pitch=36
     // mode 1: <=8  cells — 2 col × 4 row, pitch=33
-    // mode 2: <=12 cells — 2 col × 6 row, pitch=26
+    // mode 2: <=12 cells — 2 col × 6 row, pitch=26 (we force mode 0 to alternate 6 cells at a time)
     // mode 3: <=16 cells — 4 col × 4 row, pitch=33, no bars (too narrow)
     int mode;
     if      (activeCells <= 6)  mode = 0;
     else if (activeCells <= 8)  mode = 1;
-    else if (activeCells <= 12) mode = 2;
+    else if (activeCells <= 12) mode = 0; // force 6-cell layout to alternate 1-6 / 7-12
     else                        mode = 3;
 
     // Column x positions per mode
@@ -541,19 +560,35 @@ void Display::updateModulePage(int addr)
 
     modPage.addr = addr;
 
-    char buf[48];
-    snprintf(buf, sizeof(buf), "Mod#%d  %.2fV", addr, mod.getModuleVoltage());
-    lv_label_set_text(modPage.titleLabel, buf);
-
     int activeCells = bms.getModuleCells(addr);
 
+    char buf[48];
+    if (activeCells == 12) {
+        snprintf(buf, sizeof(buf), "Mod#%d (%s) %.2fV", addr, showSecondHalf ? "7-12" : "1-6", mod.getModuleVoltage());
+    } else {
+        snprintf(buf, sizeof(buf), "Mod#%d  %.2fV", addr, mod.getModuleVoltage());
+    }
+    lv_label_set_text(modPage.titleLabel, buf);
+
     for (int i = 0; i < MAX_CELLS_DISPLAY; i++) {
+        bool shouldHide = false;
         if (i >= activeCells) {
+            shouldHide = true;
+        } else if (activeCells == 12) {
+            if (showSecondHalf) {
+                if (i < 6) shouldHide = true;
+            } else {
+                if (i >= 6) shouldHide = true;
+            }
+        }
+
+        if (shouldHide) {
             lv_obj_add_flag(modPage.cellLabel[i],   LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(modPage.cellValLabel[i], LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(modPage.bar[i],          LV_OBJ_FLAG_HIDDEN);
             continue;
         }
+
         lv_obj_clear_flag(modPage.cellLabel[i],   LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(modPage.cellValLabel[i], LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(modPage.bar[i],          LV_OBJ_FLAG_HIDDEN);

@@ -28,6 +28,7 @@ private:
     bool dirty;
     bool initialized;
     uint32_t lastLvglTick;
+    bool showSecondHalf;
 
     void buildPackPage();
     void buildModulePage(int addr);
