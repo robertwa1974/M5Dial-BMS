@@ -617,7 +617,15 @@ bool WiFiManager::begin()
         pack["modules"]         = bms.getNumModules();
         pack["faulted"]         = bms.isFaultedState();
         pack["balancing"]       = bms.getAutoBalance() && !bms.getBalanceInhibit();
-        pack["numCells"]        = (int)(settings.numCells > 0 ? settings.numCells : 6);
+        int defaultCells = 6;
+        if (settings.cmuType == CMU_BMW_I3 || settings.cmuType == CMU_BMW_I3_BUS || settings.cmuType == CMU_BMW_MINIE) {
+            defaultCells = 12;
+        } else if (settings.cmuType == CMU_BMW_PHEV) {
+            defaultCells = 16;
+        } else if (settings.numCells > 0) {
+            defaultCells = settings.numCells;
+        }
+        pack["numCells"]        = defaultCells;
         // v6: Balance inhibit status
         pack["chargerActive"]   = can.getChargerActive();
         pack["canInhibit"]      = (bool)settings.canInhibitEnabled;
@@ -777,7 +785,17 @@ bool WiFiManager::begin()
             if (!j["batteryID"].isNull())   { int v=j["batteryID"]; if(v>=1&&v<=14) { settings.batteryID=(uint8_t)v; changed=true; } }
             if (!j["logLevel"].isNull())    { int v=j["logLevel"];  if(v>=0&&v<=4)  { settings.logLevel=(uint8_t)v;  changed=true; } }
             // v7: CMU type and balance inhibit
-            if (!j["cmuType"].isNull())          { int v=j["cmuType"]; if(v>=0&&v<=4) { settings.cmuType=(uint8_t)v; changed=true; } }
+            bool cmuChanged = false;
+            if (!j["cmuType"].isNull()) {
+                int v = j["cmuType"];
+                if (v >= 0 && v <= 4) {
+                    if (settings.cmuType != (uint8_t)v) {
+                        settings.cmuType = (uint8_t)v;
+                        changed = true;
+                        cmuChanged = true;
+                    }
+                }
+            }
             if (!j["canInhibitEnabled"].isNull()) { settings.canInhibitEnabled=(j["canInhibitEnabled"].as<int>()!=0)?1:0; changed=true; }
             if (!j["chargerHeartbeatID"].isNull()) { int v=j["chargerHeartbeatID"]; if(v>0&&v<=0x7FF) { settings.chargerHeartbeatID=(uint32_t)v; changed=true; } }
             // Per-module cell count overrides: array index 1..MAX_MODULE_ADDR
@@ -802,6 +820,12 @@ bool WiFiManager::begin()
                 EEPROM.commit();
                 Logger::console("Settings updated from web UI");
                 req->send(200, "application/json", "{\"ok\":true}");
+                if (cmuChanged) {
+                    xTaskCreate([](void *param) {
+                        vTaskDelay(pdMS_TO_TICKS(1000));
+                        ESP.restart();
+                    }, "restart_task", 1024, nullptr, 1, nullptr);
+                }
             } else {
                 req->send(200, "application/json", "{\"ok\":false,\"error\":\"no valid fields\"}");
             }

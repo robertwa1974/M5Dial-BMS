@@ -6,6 +6,8 @@
 //      Eliminates all -Wwrite-strings errors/warnings throughout the project.
 // =============================================================================
 #include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include "bms_config.h"
 
 class Logger {
@@ -18,13 +20,15 @@ public:
     static void warn(const char *fmt, ...);
     static void error(const char *fmt, ...);
     static void console(const char *fmt, ...);
+    static void init();           // call once from setup() before tasks start
     static void setLoglevel(LogLevel);
     static LogLevel getLogLevel();
     static uint32_t getLastLogTime();
     static boolean isDebug();
 private:
-    static LogLevel  logLevel;
-    static uint32_t  lastLogTime;
+    static LogLevel          logLevel;
+    static uint32_t          lastLogTime;
+    static SemaphoreHandle_t serialMutex;
     static void log(LogLevel, const char *format, va_list);
     static void logMessage(const char *format, va_list args);
 };

@@ -163,6 +163,9 @@ static void toggleWifi()
 // =============================================================================
 void setup()
 {
+    // 0. Serial mutex — must be first, before any Logger calls or tasks
+    Logger::init();
+
     // 1. Power hold MUST be first
     pinMode(PIN_POWER_HOLD, OUTPUT);
     digitalWrite(PIN_POWER_HOLD, HIGH);
@@ -204,6 +207,9 @@ void setup()
     EEPROM.begin(sizeof(EEPROMSettings));
     loadSettings();
     applySettings();
+    Logger::setLoglevel(Logger::Debug);  // force full debug regardless of EEPROM
+    settings.wifiEnabled = 1;            // force WiFi on regardless of EEPROM
+    settings.cmuType = CMU_BMW_I3_BUS;   // force BMW i3 Bus mode regardless of EEPROM
 
     // 9. BMS enumeration — path depends on CMU type
     if (settings.cmuType == CMU_TESLA) {
@@ -355,7 +361,7 @@ void loadSettings()
         settings.checksum         = 0;
         settings.canSpeed         = CAN_BAUD_RATE;
         settings.batteryID        = 1;
-        settings.logLevel         = Logger::Info;
+        settings.logLevel         = Logger::Debug;
         settings.OverVSetpoint    = DEFAULT_OVER_V;
         settings.UnderVSetpoint   = DEFAULT_UNDER_V;
         settings.OverTSetpoint    = DEFAULT_OVER_T;
@@ -367,7 +373,7 @@ void loadSettings()
         settings.IgnoreTempThresh = DEFAULT_IGNORE_TEMP_THRESH;
         settings.balanceVoltage   = DEFAULT_BALANCE_V;
         settings.balanceHyst      = DEFAULT_BALANCE_HYST;
-        settings.wifiEnabled      = 0;
+        settings.wifiEnabled      = 1; //ksl change default
         settings.balancingEnabled = 0;
         strncpy(settings.wifiSSID, WIFI_SSID_DEFAULT, 31);
         strncpy(settings.wifiPass, WIFI_PASS_DEFAULT, 31);
@@ -378,7 +384,7 @@ void loadSettings()
         settings.socHi       = DEFAULT_SOC_HI;
         memset(settings.moduleCells, 0, sizeof(settings.moduleCells));
         // v6 new defaults
-        settings.cmuType            = CMU_TESLA;
+        settings.cmuType            = CMU_BMW_I3_BUS; //ksl change default
         settings.canInhibitEnabled  = DEFAULT_CAN_INHIBIT;
         settings.chargerHeartbeatID = DEFAULT_CHARGER_HB_ID;
         EEPROM.put(EEPROM_PAGE, settings);

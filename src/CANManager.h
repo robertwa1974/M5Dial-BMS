@@ -106,6 +106,7 @@ private:
     // BMW_PHEV_FINAL_XOR table, confirmed identical to T-CAN485's miniE_finalxor)
     CRC8    phevCrc8;
     uint8_t getPhevChecksum(uint32_t id, uint8_t *buf, int modIdx);
+    uint8_t getI3BusChecksum(uint32_t id, uint8_t *buf, int modIdx);
 
     // BMWI3BUS command counter (independent of PHEV's cycle state)
     uint16_t bmwI3Bus_counter;   // cycle count: 0-3=init, 4+=steady state

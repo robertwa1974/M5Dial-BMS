@@ -2,6 +2,18 @@
 
 ---
 
+## v7-beta6 — June 2026
+
+### Bug Fixes
+- **BMW i3 Bus Checksum Fix** — Implemented 9-byte CRC8 checksum calculation in `CANManager::getI3BusChecksum()` to correctly cover all 7 payload bytes (including the rolling counter `buf[6]`). Corrected `sendBMWI3BUSCommand` keepalive task to use this fix. Resolves the issue where battery modules rejected keepalives, causing the screen and web UI to display zero volts.
+- **Web UI 12-Cell Display Fix** — Updated `getModuleCells()` to support both `CMU_BMW_I3_BUS` and `CMU_BMW_MINIE` modes. Corrected `WiFiManager::applySettings()` and `WiFiManager.cpp` API output to dynamically output the correct default cell count based on the selected CMU type (12 cells for i3/Mini-E variants, 16 cells for PHEV).
+- **Auto-Reboot on CMU Type Change** — Added automatic restart logic (`ESP.restart()`) delayed by 1 second when CMU type settings are updated via the Web UI or Serial Console command (`CMUTYPE`).
+- **Mutex-Protected Logging** — Added FreeRTOS mutex synchronization in `Logger.cpp` to prevent interleaved characters in serial console outputs.
+- **CAN RX Rate Limiting** — Throttled high-frequency `0x100` heartbeat log output, allowing critical CAN frame parsing to complete without serial console overflow.
+- **Aligned Array Bounds** — Updated `BMSModule::setCellVoltage` and constructor to support up to 16 cells, preventing out-of-bounds array access in 16-cell configurations.
+
+---
+
 ## v7-beta3 — May 2026
 
 ### New Features
