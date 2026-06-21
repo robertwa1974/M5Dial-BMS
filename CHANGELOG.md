@@ -2,6 +2,13 @@
 
 ---
 
+## v7-beta7 — June 2026
+
+### Bug Fixes
+- **M5Dial 12-Cell Screen Overlap Fix** — Alternates display between cells 1-6 and cells 7-12 every 1 second when viewing a module page with 12 cells, utilizing the spacious 6-cell layout to prevent text and progress bar overlap on the round screen.
+
+---
+
 ## v7-beta6 — June 2026
 
 ### Bug Fixes
