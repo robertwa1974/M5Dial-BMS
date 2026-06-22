@@ -611,8 +611,8 @@ bool BMSModuleManager::getAutoBalance()                { return autoBalance;    
 int BMSModuleManager::getModuleCells(int addr)
 {
     if (addr < 1 || addr > MAX_MODULE_ADDR) return 6;
-    // BMW i3: always 12 cells per module regardless of settings
-    if (settings.cmuType == CMU_BMW_I3) {
+    // BMW i3 / Mini-E variants: always 12 cells per module regardless of settings
+    if (settings.cmuType == CMU_BMW_I3 || settings.cmuType == CMU_BMW_I3_BUS || settings.cmuType == CMU_BMW_MINIE) {
         modules[addr].setNumCells(BMW_I3_CELLS_PER_MOD);
         return BMW_I3_CELLS_PER_MOD;
     }

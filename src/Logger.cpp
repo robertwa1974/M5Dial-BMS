@@ -1,11 +1,24 @@
 // =============================================================================
 // Logger.cpp
-// FIX: All format string arguments changed from char* to const char*
 // =============================================================================
 #include "Logger.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
-Logger::LogLevel Logger::logLevel    = Logger::Info;
-uint32_t         Logger::lastLogTime = 0;
+Logger::LogLevel  Logger::logLevel    = Logger::Info;
+uint32_t          Logger::lastLogTime = 0;
+SemaphoreHandle_t Logger::serialMutex = nullptr;  // created in init()
+
+void Logger::init() {
+    if (!serialMutex) {
+        serialMutex = xSemaphoreCreateMutex();
+        if (serialMutex) {
+            SERIALCONSOLE.println("[LOGGER] Mutex initialized successfully.");
+        } else {
+            SERIALCONSOLE.println("[LOGGER] ERROR: Mutex initialization failed!");
+        }
+    }
+}
 
 void Logger::debug(const char *message, ...) {
     if (logLevel > Debug) return;
@@ -38,23 +51,40 @@ uint32_t Logger::getLastLogTime()        { return lastLogTime; }
 boolean  Logger::isDebug()               { return logLevel == Debug; }
 
 void Logger::log(LogLevel level, const char *format, va_list args) {
-    lastLogTime = millis();
-    SERIALCONSOLE.print(lastLogTime);
-    SERIALCONSOLE.print(" - ");
+    char msg[256];
+    vsnprintf(msg, sizeof(msg), format, args);
+
+    const char *lvl;
     switch (level) {
-        case Debug:  SERIALCONSOLE.print("DEBUG");   break;
-        case Info:   SERIALCONSOLE.print("INFO");    break;
-        case Warn:   SERIALCONSOLE.print("WARNING"); break;
-        case Error:  SERIALCONSOLE.print("ERROR");   break;
-        default: break;
+        case Debug:  lvl = "DEBUG";   break;
+        case Info:   lvl = "INFO";    break;
+        case Warn:   lvl = "WARNING"; break;
+        case Error:  lvl = "ERROR";   break;
+        default:     lvl = "LOG";     break;
     }
-    SERIALCONSOLE.print(": ");
-    logMessage(format, args);
+
+    char line[320];
+    lastLogTime = millis();
+    snprintf(line, sizeof(line), "%lu - %s: %s", lastLogTime, lvl, msg);
+
+    // Single println() is atomic within HWCDC — no mid-line interleaving
+    if (serialMutex && xSemaphoreTake(serialMutex, portMAX_DELAY) == pdTRUE) {
+        SERIALCONSOLE.println(line);
+        xSemaphoreGive(serialMutex);
+    } else {
+        SERIALCONSOLE.print("[NO MUTEX] ");
+        SERIALCONSOLE.println(line);  // fallback before mutex init
+    }
 }
 
 void Logger::logMessage(const char *format, va_list args) {
-    // Use vsnprintf so all standard qualifiers work: %.2f, %02X, %d, %s etc.
     char buf[256];
     vsnprintf(buf, sizeof(buf), format, args);
-    SERIALCONSOLE.println(buf);
+    if (serialMutex && xSemaphoreTake(serialMutex, portMAX_DELAY) == pdTRUE) {
+        SERIALCONSOLE.println(buf);
+        xSemaphoreGive(serialMutex);
+    } else {
+        SERIALCONSOLE.print("[NO MUTEX] ");
+        SERIALCONSOLE.println(buf);
+    }
 }

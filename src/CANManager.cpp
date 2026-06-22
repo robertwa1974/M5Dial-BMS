@@ -196,6 +196,22 @@ void CANManager::processRxFrame(const twai_message_t &msg)
     uint32_t id  = msg.identifier;
     uint8_t  dlc = msg.data_length_code;
 
+    // Raw frame dump — throttled per ID to avoid flooding serial at 115200 baud
+    if (Logger::isDebug()) {
+        // Track frame counts per ID bucket to rate-limit noisy IDs
+        static uint16_t frameCnt[8] = {};  // buckets: 0x100,0x1C0,0x1D0,others
+        uint8_t bucket = (id == 0x100) ? 0 : (id == 0x1C0) ? 1 : (id == 0x1D0) ? 2 : 3;
+        uint8_t logEvery = (id == 0x100) ? 10 : 1;  // 0x100 ~20Hz → log ~2Hz
+        frameCnt[bucket]++;
+        if (frameCnt[bucket] % logEvery == 0) {
+            char buf[64];
+            int  pos = snprintf(buf, sizeof(buf), "CAN RX 0x%03X [%d]", id, dlc);
+            for (int i = 0; i < dlc && pos < (int)sizeof(buf) - 4; i++)
+                pos += snprintf(buf + pos, sizeof(buf) - pos, " %02X", msg.data[i]);
+            Logger::debug("%s", buf);
+        }
+    }
+
     if (id == settings.chargerHeartbeatID || id == 0x305 || id == 0x306) {
         lastChargerSeen    = millis();
         externalDeviceSeen = true;
@@ -467,6 +483,20 @@ uint8_t CANManager::getPhevChecksum(uint32_t id, uint8_t *buf, int modIdx)
 }
 
 // ---------------------------------------------------------------------------
+// getI3BusChecksum
+// CRC8 over [id_high, id_low, buf[0]..buf[6]], XOR with BMW_PHEV_FINAL_XOR[modIdx]
+// modIdx is the 0-based module index (0..BMW_I3_MAX_MODS-1).
+// ---------------------------------------------------------------------------
+uint8_t CANManager::getI3BusChecksum(uint32_t id, uint8_t *buf, int modIdx)
+{
+    uint8_t canmes[9];
+    canmes[0] = (uint8_t)(id >> 8);
+    canmes[1] = (uint8_t)(id & 0xFF);
+    for (int i = 0; i < 7; i++) canmes[i + 2] = buf[i];
+    return phevCrc8.get_crc8(canmes, 9, BMW_PHEV_FINAL_XOR[modIdx]);
+}
+
+// ---------------------------------------------------------------------------
 // sendPhevCommand
 // Sends one poll command to phevNextMod then advances the cycle state.
 // Mirrors the Teensy BMWPhevBMS sendcommand() logic exactly.
@@ -613,7 +643,7 @@ void CANManager::sendBMWI3BUSCommand()
         buf[4] = 0x20;
         buf[5] = 0x00;
         buf[6] = counter;
-        buf[7] = getPhevChecksum(msgId, buf, (int)slot);
+        buf[7] = getI3BusChecksum(msgId, buf, (int)slot);
         sendFrame(msgId, buf, 8);
     }
 

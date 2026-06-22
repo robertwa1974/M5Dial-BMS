@@ -11,7 +11,7 @@
 
 BMSModule::BMSModule()
 {
-    for (int i = 0; i < 12; i++)
+    for (int i = 0; i < 16; i++)
     {
         cellVolt[i]        = 0.0f;
         lowestCellVolt[i]  = 5.0f;
@@ -285,7 +285,7 @@ int  BMSModule::getNumCells() const           { return numCells; }
 // Direct cell voltage write — used by CAN-sourced slave types (BMW i3 etc.)
 void BMSModule::setCellVoltage(int cell, float v)
 {
-    if (cell < 0 || cell >= 12) return;
+    if (cell < 0 || cell >= 16) return;
     cellVolt[cell] = v;
     if (v > IgnoreCell) {
         if (v < lowestCellVolt[cell])  lowestCellVolt[cell]  = v;

@@ -350,16 +350,24 @@ void SerialConsole::handleConfigCmd() {
     // --- v6: CMU type ---
     else if (cmdString == "CMUTYPE") {
         if (newValue >= 0 && newValue <= 4) {
-            settings.cmuType = (uint8_t)newValue;
-            needEEPROMWrite = true;
-            const char *cmuNames[] = {
-                "Tesla UART",
-                "BMW i3 CAN",
-                "BMW i3 Bus Pack",
-                "BMW Mini-E",
-                "BMW PHEV SP06/SP41"
-            };
-            Logger::console("CMU type: %s  (reboot required)", cmuNames[newValue]);
+            if (settings.cmuType != (uint8_t)newValue) {
+                settings.cmuType = (uint8_t)newValue;
+                needEEPROMWrite = true;
+                const char *cmuNames[] = {
+                    "Tesla UART",
+                    "BMW i3 CAN",
+                    "BMW i3 Bus Pack",
+                    "BMW Mini-E",
+                    "BMW PHEV SP06/SP41"
+                };
+                Logger::console("CMU type: %s  (Rebooting in 1s to apply...)", cmuNames[newValue]);
+                xTaskCreate([](void *param) {
+                    vTaskDelay(pdMS_TO_TICKS(1000));
+                    ESP.restart();
+                }, "restart_task", 1024, nullptr, 1, nullptr);
+            } else {
+                Logger::console("CMU type already set to that value.");
+            }
         } else Logger::console("Invalid (0=Tesla, 1=BMW i3, 2=BMW i3 Bus, 3=BMW Mini-E, 4=BMW PHEV)");
     }
     // --- v6: CAN-based balance inhibit ---
