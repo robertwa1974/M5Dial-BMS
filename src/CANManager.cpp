@@ -14,6 +14,7 @@
 //   - New accessor: getVwSlaveData()
 //   - vwPollTaskFn / sendVwPoll(): 0x0BA poll pair every 500 ms with the
 //     BMWI3BUS-style empty-bus grace window + 1-in-N backoff
+//   - sendVwBalance() / sendVwBalanceStop(): extended-ID balance commands
 // =============================================================================
 #include "CANManager.h"
 #include "bms_config.h"
@@ -838,6 +839,47 @@ void CANManager::sendVwPoll()
     sendFrame(VW_POLL_ID, (uint8_t *)VW_POLL_FRAME_1, 8);
     vTaskDelay(pdMS_TO_TICKS(1));   // reference: delay(1) between the two frames
     sendFrame(VW_POLL_ID, (uint8_t *)VW_POLL_FRAME_2, 8);
+}
+
+// ---------------------------------------------------------------------------
+// sendVwBalance - VW CMU balance command for one module
+// (BMSModuleManager.cpp:96-215): two EXTENDED frames, payloads from
+// vwBuildBalFrames(). Modules 1-12 only - there is no ID pair above 12.
+// Called from the loop task; the 1 ms gaps keep the 8-deep TX queue from
+// overflowing when all 12 modules are sent back to back (reference: delay(1)
+// between A and B; the gap after B is added here).
+// ---------------------------------------------------------------------------
+void CANManager::sendVwBalance(int mod, uint16_t mask)
+{
+    uint32_t idA = vwBalCmdIdA(mod);
+    uint32_t idB = vwBalCmdIdB(mod);
+    if (!idA || !idB) return;
+
+    uint8_t a[8], b[8];
+    vwBuildBalFrames(mask, a, b);
+    sendFrame(idA, a, 8, true);
+    vTaskDelay(pdMS_TO_TICKS(1));
+    sendFrame(idB, b, 8, true);
+    vTaskDelay(pdMS_TO_TICKS(1));
+}
+
+// ---------------------------------------------------------------------------
+// sendVwBalanceStop - "stop balancing" to all 12 module ID pairs
+// (BMSModuleManager.cpp:223-343): all A frames (00 x8), then all B frames
+// (00 00 00 00 FE FE FE FE), 1 ms apart.
+// ---------------------------------------------------------------------------
+void CANManager::sendVwBalanceStop()
+{
+    uint8_t a[8], b[8];
+    vwBuildBalStopFrames(a, b);
+    for (int m = 1; m <= VW_MAX_BAL_MODS; m++) {
+        sendFrame(vwBalCmdIdA(m), a, 8, true);
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    for (int m = 1; m <= VW_MAX_BAL_MODS; m++) {
+        sendFrame(vwBalCmdIdB(m), b, 8, true);
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
 }
 
 // ---------------------------------------------------------------------------

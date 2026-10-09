@@ -96,6 +96,7 @@ static void pollEncoder()
 static uint32_t lastBmsRead     = 0;
 static uint32_t lastCANSend     = 0;
 static uint32_t lastEncoderPoll = 0;
+static uint32_t lastVwBalTick   = 0;
 static int      lastEncoderCount = 0;
 
 #define BMS_READ_INTERVAL_MS    1000
@@ -299,6 +300,7 @@ void loop()
                 break;
             case CMU_VW:
                 bms.getAllVoltTempFromVW();
+                // Balancing: own 500 ms tick below (reference state machine)
                 break;
             default:  // CMU_BMW_I3, CMU_BMW_I3_BUS, CMU_BMW_MINIE
                 bms.getAllVoltTempFromCAN();
@@ -317,6 +319,17 @@ void loop()
         } else {
             faultAlertActive = false;
         }
+    }
+
+    // VW CMU balancing - reference state machine ticks every 500 ms
+    // (VWBMSV2.ino:758-763). Only while auto-balance is on, not inhibited
+    // (GPIO / CAN charger) and not faulted; otherwise stop any active bleed.
+    if (settings.cmuType == CMU_VW && (now - lastVwBalTick >= VW_BAL_TICK_MS)) {
+        lastVwBalTick = now;
+        if (bms.getAutoBalance() && !bms.getBalanceInhibit() && !bms.isFaultedState())
+            bms.balanceCells();
+        else
+            bms.stopBalancingVW();
     }
 
     // CAN TX summary frames

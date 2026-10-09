@@ -94,6 +94,9 @@ public:
     // Reference suppresses cell decode while balancing (BMSModuleManager.cpp:432);
     // BMSModuleManager sets this from the balance state machine.
     void setVwBalancing(bool active) { vwBalancing = active; }
+    // VW balance commands (EXTENDED IDs): one module's mask, or stop all 12
+    void sendVwBalance(int mod, uint16_t mask);
+    void sendVwBalanceStop();
 
 private:
     bool         running;

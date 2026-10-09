@@ -23,6 +23,8 @@ public:
     void wakeBoards();
     void getAllVoltTemp();
     void balanceCells();
+    // VW CMU: send stop frames if a bleed is active and reset the duty cycle
+    void stopBalancingVW();
 
     // Configuration
     void readSetpoints();
@@ -83,4 +85,8 @@ private:
     bool      autoBalance;      // true = balance automatically each cycle
     // VW CMU: module has sent sub-frame 3, i.e. really has a 13th cell
     bool      vwHasCell13[MAX_MODULE_ADDR + 1];
+    // VW CMU balancing state (reference balcnt duty cycle)
+    uint8_t   vwBalCnt;
+    bool      vwBalCmdSent;     // balance frames sent since the last stop
+    void      balanceCellsVW();
 };

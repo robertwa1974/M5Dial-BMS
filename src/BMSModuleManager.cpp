@@ -65,6 +65,8 @@ BMSModuleManager::BMSModuleManager()
     balanceInhibit  = false;
     autoBalance     = false;
     memset(vwHasCell13, 0, sizeof(vwHasCell13));
+    vwBalCnt        = 0;
+    vwBalCmdSent    = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,6 +77,12 @@ void BMSModuleManager::balanceCells()
 {
     if (balanceInhibit) {
         Logger::info("Balancing inhibited (drive mode active)");
+        return;
+    }
+
+    // VW CMU: CAN balance commands with the reference duty cycle
+    if (settings.cmuType == CMU_VW) {
+        balanceCellsVW();
         return;
     }
 
@@ -134,6 +142,75 @@ void BMSModuleManager::balanceCells()
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// balanceCellsVW - VW CMU balancing, ported from VWBMSV2
+//   gate:   VWBMSV2.ino:492
+//   cycle:  BMSModuleManager.cpp:50-350 (balanceCells / balcnt)
+// Called once per VW_BAL_TICK_MS (500 ms, the reference's loop period) from
+// main.cpp, only while auto-balance is on, balancing is not inhibited (GPIO /
+// CAN charger) and the pack is not faulted.
+//
+// Gate: high cell > settings.balanceVoltage AND high > low + balanceHyst.
+// Duty cycle (vwBalanceAction): counter 1 sends stop frames and resumes cell
+// measurement; 11, 15, 20 ... 55 (re)send per-module masks; wraps after 60.
+// At 500 ms that is ~5 s measuring, ~25 s bleeding. Mask: cells above the
+// lowest pack cell + balanceHyst.
+// Cell decode is suppressed in CANManager while any module is bleeding.
+//
+// Deviations from the reference:
+//   - modules 1-12 only (no balance ID pair above 12; the reference falls
+//     through "default: break;" and re-sends on module 12's ID)
+//   - stop frames are sent when the gate drops mid-cycle (the reference just
+//     stops calling balanceCells() and leaves modules bleeding)
+// ---------------------------------------------------------------------------
+void BMSModuleManager::balanceCellsVW()
+{
+    float hi = getHighCellVolt();
+    float lo = getLowCellVolt();
+    if (!vwBalanceGate(hi, lo, settings.balanceVoltage, settings.balanceHyst)) {
+        stopBalancingVW();
+        return;
+    }
+
+    VwBalAction act = vwBalanceAction(vwBalCnt);
+    if (act == VW_BAL_STOP) {
+        can.sendVwBalanceStop();
+        vwBalCmdSent = false;
+        can.setVwBalancing(false);   // measure for the next ~5 s
+    } else if (act == VW_BAL_SEND) {
+        bool any = false;
+        for (int x = 1; x <= VW_MAX_BAL_MODS; x++) {
+            if (!modules[x].isExisting()) continue;
+            int   n = getModuleCells(x);
+            float cv[VW_CELLS_PER_MOD];
+            for (int c = 0; c < n; c++) cv[c] = modules[x].getCellVoltage(c);
+            uint16_t mask = vwBalanceMask(cv, n, lo, settings.balanceHyst);
+            if (mask) any = true;
+            can.sendVwBalance(x, mask);
+            Logger::debug("VW balance: module %d mask 0x%04X", x, mask);
+        }
+        vwBalCmdSent = true;
+        can.setVwBalancing(any);
+        if (!any) vwBalCnt = 0;      // BMSModuleManager.cpp:218-220
+    }
+    vwBalCnt++;
+}
+
+// ---------------------------------------------------------------------------
+// stopBalancingVW - stop any active VW bleed and reset the duty cycle.
+// Called when balancing is not permitted or the gate is not met.
+// ---------------------------------------------------------------------------
+void BMSModuleManager::stopBalancingVW()
+{
+    if (vwBalCmdSent) {
+        can.sendVwBalanceStop();
+        vwBalCmdSent = false;
+        Logger::info("VW balancing stopped");
+    }
+    can.setVwBalancing(false);
+    vwBalCnt = 0;
 }
 
 // ---------------------------------------------------------------------------
