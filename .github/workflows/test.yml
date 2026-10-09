@@ -1,0 +1,33 @@
+name: Unit tests
+
+# Host-side unit tests. Runs on every branch push and pull request; separate
+# from build-and-deploy.yml, so it never publishes anything.
+on:
+  push:
+    branches: [ '**' ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  vw-decode:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build VW CMU decoder test
+        run: g++ -std=c++11 -Wall -Wextra -Isrc -Itest/stubs test/vw_decode_test.cpp -o vw_decode_test
+
+      - name: Run VW CMU decoder test
+        run: ./vw_decode_test
+
+      # The expected tables in the test are generated from Tom de Bree's
+      # VWBMSV2 source. Regenerate them and fail if the committed copy differs.
+      - name: Reference tables match VWBMSV2 source
+        run: |
+          git clone --quiet https://github.com/Tom-evnut/VW-bms.git "$RUNNER_TEMP/VW-bms"
+          git -C "$RUNNER_TEMP/VW-bms" checkout --quiet 4a6a5b901dd8ee4c443b04fd6376f45d92306de6
+          python3 tools/gen_vw_reference_tables.py "$RUNNER_TEMP/VW-bms/VWBMSV2" > test/vw_reference_tables.h
+          git diff --exit-code test/vw_reference_tables.h
