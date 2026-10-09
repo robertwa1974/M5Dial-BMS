@@ -14,7 +14,8 @@
 //   - New accessor: getVwSlaveData()
 //   - vwPollTaskFn / sendVwPoll(): 0x0BA poll pair every 500 ms with the
 //     BMWI3BUS-style empty-bus grace window + 1-in-N backoff
-//   - sendVwBalance() / sendVwBalanceStop(): extended-ID balance commands
+//   - sendVwBalance() / sendVwBalanceStop(): extended-ID balance commands,
+//     sent from the VW task; loop() hands requests over through vwBalQueue
 // =============================================================================
 #include "CANManager.h"
 #include "bms_config.h"
@@ -36,7 +37,8 @@ CANManager::CANManager()
       lastChargerSeen(0), canCurrentA(0.0f), externalDeviceSeen(false),
       phevNextMod(0), phevMesCycle(0), phevTestCycle(0), phevBalCells(false),
       bmwI3Bus_counter(0), i3BusLastReplySeenMs(0), i3BusTxStartMs(0),
-      vwBalancing(false), vwLastReplySeenMs(0), vwTxStartMs(0)
+      vwBalancing(false), vwLastReplySeenMs(0), vwTxStartMs(0),
+      vwBalQueue(nullptr)
 {
     memset(i3data,   0, sizeof(i3data));
     memset(i3acc,    0, sizeof(i3acc));
@@ -113,10 +115,13 @@ bool CANManager::begin()
     }
 
     // VW CMU: start the 0x0BA poll task (broadcast; no enumeration needed -
-    // module numbers come from the cell-frame CAN IDs).
+    // module numbers come from the cell-frame CAN IDs). The same task sends
+    // balance commands handed over through vwBalQueue.
     if (settings.cmuType == CMU_VW) {
         vwTxStartMs       = millis();
         vwLastReplySeenMs = 0;
+        if (!vwBalQueue) vwBalQueue = xQueueCreate(1, sizeof(VwBalRequest));
+        else             xQueueReset(vwBalQueue);
         xTaskCreatePinnedToCore(
             vwPollTaskFn, "VW_POLL", 3072, this, 4, &vwPollTaskHandle, 0);
         Logger::info("CAN: VW CMU mode — poll task running (0x%03X every %dms)",
@@ -216,13 +221,31 @@ void CANManager::i3BusCmdTaskFn(void *param)
 // ---------------------------------------------------------------------------
 // vwPollTaskFn - FreeRTOS task: send VW CMU 0x0BA poll pair every 500 ms
 // (reference sends it once per 500 ms main-loop pass, VWBMSV2.ino:758-828)
+// and any balance request handed over by loop().
+//
+// Between polls the task blocks on vwBalQueue, so a balance or stop request
+// is sent within a few ms of loop() queueing it, and the 1 ms frame gaps
+// (up to ~24 ms per request) never block loop() (encoder, display).
 // ---------------------------------------------------------------------------
 void CANManager::vwPollTaskFn(void *param)
 {
     CANManager *self = (CANManager *)param;
+    uint32_t lastPollMs = millis() - VW_POLL_INTERVAL_MS;   // poll straight away
     while (self->running) {
-        self->sendVwPoll();
-        vTaskDelay(pdMS_TO_TICKS(VW_POLL_INTERVAL_MS));
+        uint32_t since = millis() - lastPollMs;
+        if (since >= VW_POLL_INTERVAL_MS) {
+            self->sendVwPoll();
+            lastPollMs = millis();
+            since      = 0;
+        }
+        VwBalRequest req;
+        if (self->vwBalQueue &&
+            xQueueReceive(self->vwBalQueue, &req,
+                          pdMS_TO_TICKS(VW_POLL_INTERVAL_MS - since)) == pdTRUE) {
+            self->sendVwBalanceRequest(req);
+        } else if (!self->vwBalQueue) {
+            vTaskDelay(pdMS_TO_TICKS(VW_POLL_INTERVAL_MS - since));
+        }
     }
     vTaskDelete(nullptr);
 }
@@ -842,10 +865,48 @@ void CANManager::sendVwPoll()
 }
 
 // ---------------------------------------------------------------------------
+// requestVwBalance / requestVwBalanceStop - called from loop(). Hand the
+// request to the VW CAN task; xQueueOverwrite replaces any request not yet
+// sent, so the task always acts on the newest one.
+// ---------------------------------------------------------------------------
+void CANManager::requestVwBalance(uint16_t modules, const uint16_t *mask)
+{
+    if (!running || !vwBalQueue) return;
+    VwBalRequest req;
+    memset(&req, 0, sizeof(req));
+    req.stop    = false;
+    req.modules = modules;
+    for (int m = 1; m <= VW_MAX_BAL_MODS; m++) req.mask[m] = mask[m];
+    xQueueOverwrite(vwBalQueue, &req);
+}
+
+void CANManager::requestVwBalanceStop()
+{
+    if (!running || !vwBalQueue) return;
+    VwBalRequest req;
+    memset(&req, 0, sizeof(req));
+    req.stop = true;
+    xQueueOverwrite(vwBalQueue, &req);
+}
+
+// ---------------------------------------------------------------------------
+// sendVwBalanceRequest - VW CAN task: send one handed-over request
+// ---------------------------------------------------------------------------
+void CANManager::sendVwBalanceRequest(const VwBalRequest &req)
+{
+    if (req.stop) {
+        sendVwBalanceStop();
+        return;
+    }
+    for (int m = 1; m <= VW_MAX_BAL_MODS; m++)
+        if (req.modules & (1u << m)) sendVwBalance(m, req.mask[m]);
+}
+
+// ---------------------------------------------------------------------------
 // sendVwBalance - VW CMU balance command for one module
 // (BMSModuleManager.cpp:96-215): two EXTENDED frames, payloads from
 // vwBuildBalFrames(). Modules 1-12 only - there is no ID pair above 12.
-// Called from the loop task; the 1 ms gaps keep the 8-deep TX queue from
+// Runs in the VW CAN task; the 1 ms gaps keep the 8-deep TX queue from
 // overflowing when all 12 modules are sent back to back (reference: delay(1)
 // between A and B; the gap after B is added here).
 // ---------------------------------------------------------------------------

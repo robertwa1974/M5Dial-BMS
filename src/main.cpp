@@ -323,13 +323,18 @@ void loop()
 
     // VW CMU balancing - reference state machine ticks every 500 ms
     // (VWBMSV2.ino:758-763). Only while auto-balance is on, not inhibited
-    // (GPIO / CAN charger) and not faulted; otherwise stop any active bleed.
-    if (settings.cmuType == CMU_VW && (now - lastVwBalTick >= VW_BAL_TICK_MS)) {
-        lastVwBalTick = now;
-        if (bms.getAutoBalance() && !bms.getBalanceInhibit() && !bms.isFaultedState())
-            bms.balanceCells();
-        else
+    // (GPIO / CAN charger) and not faulted. The permission is checked on
+    // every loop pass, so a fault, inhibit or auto-balance off stops an
+    // active bleed straight away (stopBalancingVW() is a no-op otherwise).
+    if (settings.cmuType == CMU_VW) {
+        bool vwBalAllowed = bms.getAutoBalance() && !bms.getBalanceInhibit()
+                         && !bms.isFaultedState();
+        if (!vwBalAllowed) {
             bms.stopBalancingVW();
+        } else if (now - lastVwBalTick >= VW_BAL_TICK_MS) {
+            lastVwBalTick = now;
+            bms.balanceCells();
+        }
     }
 
     // CAN TX summary frames

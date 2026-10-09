@@ -176,21 +176,24 @@ void BMSModuleManager::balanceCellsVW()
 
     VwBalAction act = vwBalanceAction(vwBalCnt);
     if (act == VW_BAL_STOP) {
-        can.sendVwBalanceStop();
+        can.requestVwBalanceStop();
         vwBalCmdSent = false;
         can.setVwBalancing(false);   // measure for the next ~5 s
     } else if (act == VW_BAL_SEND) {
-        bool any = false;
+        bool     any = false;
+        uint16_t sendMods = 0;
+        uint16_t masks[VW_MAX_BAL_MODS + 1] = {0};
         for (int x = 1; x <= VW_MAX_BAL_MODS; x++) {
             if (!modules[x].isExisting()) continue;
             int   n = getModuleCells(x);
             float cv[VW_CELLS_PER_MOD];
             for (int c = 0; c < n; c++) cv[c] = modules[x].getCellVoltage(c);
-            uint16_t mask = vwBalanceMask(cv, n, lo, settings.balanceHyst);
-            if (mask) any = true;
-            can.sendVwBalance(x, mask);
-            Logger::debug("VW balance: module %d mask 0x%04X", x, mask);
+            masks[x]  = vwBalanceMask(cv, n, lo, settings.balanceHyst);
+            sendMods |= (uint16_t)(1u << x);
+            if (masks[x]) any = true;
+            Logger::debug("VW balance: module %d mask 0x%04X", x, masks[x]);
         }
+        can.requestVwBalance(sendMods, masks);
         vwBalCmdSent = true;
         can.setVwBalancing(any);
         if (!any) vwBalCnt = 0;      // BMSModuleManager.cpp:218-220
@@ -205,7 +208,7 @@ void BMSModuleManager::balanceCellsVW()
 void BMSModuleManager::stopBalancingVW()
 {
     if (vwBalCmdSent) {
-        can.sendVwBalanceStop();
+        can.requestVwBalanceStop();
         vwBalCmdSent = false;
         Logger::info("VW balancing stopped");
     }

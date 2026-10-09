@@ -10,12 +10,14 @@
 //   Without these poll commands the PHEV CSC modules transmit nothing.
 //
 // VW TX: third FreeRTOS task (VW CMU mode only) sends the two 0x0BA poll frames
-//   every 500 ms, with the same empty-bus grace/backoff as BMWI3BUS.
+//   every 500 ms, with the same empty-bus grace/backoff as BMWI3BUS, and the
+//   balance commands handed over by loop() through a one-slot queue.
 // =============================================================================
 #include <Arduino.h>
 #include <driver/twai.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "bms_config.h"   // for PHEV_MAX_MODS, BMW_PHEV_MAX_MODS
 #include "CRC8.h"         // for PHEV poll command CRC
 #include "VWProtocol.h"   // VW CMU frame decoders (pure functions)
@@ -57,6 +59,16 @@ struct VwSlaveData {
     uint32_t lastSeenMs;               // last guard-passing CELL frame (presence)
 };
 
+// ---------------------------------------------------------------------------
+// VW CMU balance request: loop() -> VW CAN task, through a one-slot queue
+// (xQueueOverwrite: the newest request replaces one not yet sent).
+// ---------------------------------------------------------------------------
+struct VwBalRequest {
+    bool     stop;                          // true = stop all 12 modules (masks ignored)
+    uint16_t modules;                       // bit m = send a command to module m (1..12)
+    uint16_t mask[VW_MAX_BAL_MODS + 1];     // cells to bleed per module (bit i = cell i+1)
+};
+
 class CANManager {
 public:
     CANManager();
@@ -94,9 +106,11 @@ public:
     // Reference suppresses cell decode while balancing (BMSModuleManager.cpp:432);
     // BMSModuleManager sets this from the balance state machine.
     void setVwBalancing(bool active) { vwBalancing = active; }
-    // VW balance commands (EXTENDED IDs): one module's mask, or stop all 12
-    void sendVwBalance(int mod, uint16_t mask);
-    void sendVwBalanceStop();
+    // VW balance commands (EXTENDED IDs). Called from loop(); the frames are
+    // sent by the VW CAN task so loop() never blocks on the 1 ms gaps.
+    // modules: bit m = module m (1..12) gets mask[m]; absent modules get none.
+    void requestVwBalance(uint16_t modules, const uint16_t *mask);
+    void requestVwBalanceStop();
 
 private:
     bool         running;
@@ -154,6 +168,11 @@ private:
 
     // VW TX - 0x0BA poll pair, with empty-bus grace/backoff
     void sendVwPoll();
+    // VW TX - balance frames (VW CAN task only)
+    QueueHandle_t vwBalQueue;         // one-slot VwBalRequest queue (VW mode only)
+    void sendVwBalanceRequest(const VwBalRequest &req);
+    void sendVwBalance(int mod, uint16_t mask);
+    void sendVwBalanceStop();
 
     // PHEV TX
     void sendPhevCommand();
