@@ -28,7 +28,7 @@ private:
     bool dirty;
     bool initialized;
     uint32_t lastLvglTick;
-    bool showSecondHalf;
+    uint8_t cellPage;   // paged module view: 0 = cells 1-6, 1 = 7-12, 2 = 13+
 
     void buildPackPage();
     void buildModulePage(int addr);
