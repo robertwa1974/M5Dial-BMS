@@ -12,6 +12,8 @@
 //   - processVwFrame(): cells (std 0x1B0-0x1EE), temperatures and MEB balance
 //     status (ext IDs), decoders in VWProtocol.h
 //   - New accessor: getVwSlaveData()
+//   - vwPollTaskFn / sendVwPoll(): 0x0BA poll pair every 500 ms with the
+//     BMWI3BUS-style empty-bus grace window + 1-in-N backoff
 // =============================================================================
 #include "CANManager.h"
 #include "bms_config.h"
@@ -109,6 +111,17 @@ bool CANManager::begin()
                      BMW_PHEV_CMD_RATE_MS);
     }
 
+    // VW CMU: start the 0x0BA poll task (broadcast; no enumeration needed -
+    // module numbers come from the cell-frame CAN IDs).
+    if (settings.cmuType == CMU_VW) {
+        vwTxStartMs       = millis();
+        vwLastReplySeenMs = 0;
+        xTaskCreatePinnedToCore(
+            vwPollTaskFn, "VW_POLL", 3072, this, 4, &vwPollTaskHandle, 0);
+        Logger::info("CAN: VW CMU mode — poll task running (0x%03X every %dms)",
+                     VW_POLL_ID, VW_POLL_INTERVAL_MS);
+    }
+
     return true;
 }
 
@@ -121,6 +134,7 @@ void CANManager::end()
     running = false;
     if (phevCmdTaskHandle) { vTaskDelete(phevCmdTaskHandle); phevCmdTaskHandle = nullptr; }
     if (i3BusCmdTaskHandle) { vTaskDelete(i3BusCmdTaskHandle); i3BusCmdTaskHandle = nullptr; }
+    if (vwPollTaskHandle)  { vTaskDelete(vwPollTaskHandle);  vwPollTaskHandle  = nullptr; }
     if (rxTaskHandle)      { vTaskDelete(rxTaskHandle);      rxTaskHandle      = nullptr; }
     twai_stop();
     twai_driver_uninstall();
@@ -194,6 +208,20 @@ void CANManager::i3BusCmdTaskFn(void *param)
     while (self->running) {
         self->sendBMWI3BUSCommand();
         vTaskDelay(pdMS_TO_TICKS(BMW_CSC_CMD_INTERVAL_MS));
+    }
+    vTaskDelete(nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// vwPollTaskFn - FreeRTOS task: send VW CMU 0x0BA poll pair every 500 ms
+// (reference sends it once per 500 ms main-loop pass, VWBMSV2.ino:758-828)
+// ---------------------------------------------------------------------------
+void CANManager::vwPollTaskFn(void *param)
+{
+    CANManager *self = (CANManager *)param;
+    while (self->running) {
+        self->sendVwPoll();
+        vTaskDelay(pdMS_TO_TICKS(VW_POLL_INTERVAL_MS));
     }
     vTaskDelete(nullptr);
 }
@@ -777,6 +805,39 @@ void CANManager::sendBMWI3BUSCommand()
     }
 
     bmwI3Bus_counter++;
+}
+
+// ---------------------------------------------------------------------------
+// sendVwPoll - VW CMU poll (VWBMSV2.ino:3104-3129 sendcommand())
+//
+// Two STANDARD frames on 0x0BA, 1 ms apart. Broadcast - every CMU on the bus
+// answers; it is not a per-module poll.
+//
+// Whether MEB CMUs need this poll at all is still an open bench question:
+// they may transmit autonomously once powered.
+//
+// Backoff: same scheme as sendBMWI3BUSCommand(). Full rate for a grace window
+// so modules can wake; if no VW frame has ever been received after that, only
+// 1-in-N calls transmit. Unconditional polling into a bus with nothing to ACK
+// drove the controller into a bus-off/recovery loop on the i3 Bus variant.
+// ---------------------------------------------------------------------------
+void CANManager::sendVwPoll()
+{
+    if (!running) return;
+
+    static const uint32_t VW_TX_GRACE_MS    = 3000; // initial full-rate window (as BMWI3BUS)
+    static const uint32_t VW_TX_BACKOFF_DIV = 10;   // 1-in-10 calls once backed off (~5s @ 500ms)
+    bool everReplied   = (vwLastReplySeenMs != 0);
+    bool inGraceWindow = (millis() - vwTxStartMs) < VW_TX_GRACE_MS;
+    if (!everReplied && !inGraceWindow) {
+        static uint32_t skipCounter = 0;
+        skipCounter++;
+        if (skipCounter % VW_TX_BACKOFF_DIV != 0) return;
+    }
+
+    sendFrame(VW_POLL_ID, (uint8_t *)VW_POLL_FRAME_1, 8);
+    vTaskDelay(pdMS_TO_TICKS(1));   // reference: delay(1) between the two frames
+    sendFrame(VW_POLL_ID, (uint8_t *)VW_POLL_FRAME_2, 8);
 }
 
 // ---------------------------------------------------------------------------

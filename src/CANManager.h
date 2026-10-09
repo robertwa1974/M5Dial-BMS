@@ -151,6 +151,9 @@ private:
     // VW RX - returns true if the frame was a VW frame (consumed)
     bool processVwFrame(const twai_message_t &msg);
 
+    // VW TX - 0x0BA poll pair, with empty-bus grace/backoff
+    void sendVwPoll();
+
     // PHEV TX
     void sendPhevCommand();
     void sendPhevResetIDs();
@@ -159,4 +162,5 @@ private:
     static void rxTaskFn(void *param);
     static void phevCmdTaskFn(void *param);
     static void i3BusCmdTaskFn(void *param);
+    static void vwPollTaskFn(void *param);
 };
