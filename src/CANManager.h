@@ -4,10 +4,13 @@
 //
 // TX: SimpBMS frames 0x351/355/356/35A/35E/35F/35E/35F + extended 0x373
 //     gated on externalDeviceSeen (any non-CSC frame received)
-// RX: FreeRTOS task on core 0 decodes BMW i3/PHEV frames, charger heartbeat
+// RX: FreeRTOS task on core 0 decodes BMW i3/PHEV/VW frames, charger heartbeat
 //
 // PHEV TX: second FreeRTOS task (PHEV mode only) sends 0x080|slot every 50ms.
 //   Without these poll commands the PHEV CSC modules transmit nothing.
+//
+// VW TX: third FreeRTOS task (VW CMU mode only) sends the two 0x0BA poll frames
+//   every 500 ms, with the same empty-bus grace/backoff as BMWI3BUS.
 // =============================================================================
 #include <Arduino.h>
 #include <driver/twai.h>
@@ -16,6 +19,7 @@
 #include "bms_config.h"   // for PHEV_MAX_MODS, BMW_PHEV_MAX_MODS
 #include "CRC8.h"         // for PHEV poll command CRC
 #include "PhevProtocol.h" // PHEV frame builders / decoders (pure functions)
+#include "VWProtocol.h"   // VW CMU frame decoders (pure functions)
 
 // ---------------------------------------------------------------------------
 // BMW i3 / Mini-E / Bus Pack staging data
@@ -39,6 +43,19 @@ struct PhevSlaveData {
     uint16_t balstat;      // active balance bits from status frame
     bool     fresh;
     uint32_t lastSeenMs;
+};
+
+// ---------------------------------------------------------------------------
+// VW CMU (MEB / MQB) staging data
+// Index 0 unused; 1..VW_MAX_MODS = module number from the cell-frame ID table.
+// ---------------------------------------------------------------------------
+struct VwSlaveData {
+    float    cellV[VW_CELLS_PER_MOD];  // 13 cells max (modules 1-9), 12 on 10-16
+    float    temp[VW_TEMPS_PER_MOD];   // VW_TEMP_INVALID until a sensor reports
+    uint32_t balstat;                  // MEB balance status bits (0x16A9547x or type 1)
+    bool     hasCell13;                // sub-frame 3 seen - module really has 13 cells
+    bool     fresh;
+    uint32_t lastSeenMs;               // last guard-passing CELL frame (presence)
 };
 
 class CANManager {
@@ -77,11 +94,18 @@ public:
     void startPhevIdAssignment();
     bool isPhevAssigning() const { return phevAssignActive; }
 
+    // VW CMU slave data (addr 1..VW_MAX_MODS)
+    bool getVwSlaveData(int addr, VwSlaveData &out);
+    // Reference suppresses cell decode while balancing (BMSModuleManager.cpp:432);
+    // BMSModuleManager sets this from the balance state machine.
+    void setVwBalancing(bool active) { vwBalancing = active; }
+
 private:
     bool         running;
     TaskHandle_t rxTaskHandle;
     TaskHandle_t phevCmdTaskHandle;   // PHEV poll task (nullptr in non-PHEV modes)
     TaskHandle_t i3BusCmdTaskHandle;  // BMWI3BUS periodic command task (nullptr otherwise)
+    TaskHandle_t vwPollTaskHandle;    // VW CMU 0x0BA poll task (nullptr otherwise)
 
     uint32_t     lastChargerSeen;
     float        canCurrentA;
@@ -134,6 +158,18 @@ private:
     void phevAssignStep();
     void sendPhevFindUnassigned();
     void sendPhevAssignId(const uint8_t *dmc, uint8_t id);
+    // VW CMU staging + accumulator
+    VwSlaveData vwdata[VW_MAX_MODS + 1];
+    struct VwCellAcc {
+        float   cells[VW_CELLS_PER_MOD];
+        uint8_t framesRx;   // bits 0..3 = sub-frames 0..3; commit when bits 0-2 set
+    } vwAcc[VW_MAX_MODS + 1];
+    volatile bool vwBalancing;        // true = skip cell decode (modules bleeding)
+    uint32_t vwLastReplySeenMs;       // millis() of the last decoded VW frame
+    uint32_t vwTxStartMs;             // millis() when polling began (backoff timing)
+
+    // VW RX - returns true if the frame was a VW frame (consumed)
+    bool processVwFrame(const twai_message_t &msg);
 
     // PHEV TX
     void sendPhevCommand();
