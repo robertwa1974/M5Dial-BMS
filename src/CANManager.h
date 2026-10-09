@@ -49,7 +49,8 @@ public:
 
     // TX
     void sendBatterySummary();
-    void sendFrame(uint32_t id, uint8_t *data, uint8_t len);
+    // extd = true sends a 29-bit extended ID (VW CMU temperature/balance frames)
+    void sendFrame(uint32_t id, uint8_t *data, uint8_t len, bool extd = false);
 
     // RX dispatch
     void processRxFrame(const twai_message_t &msg);

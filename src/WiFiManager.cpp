@@ -38,14 +38,16 @@ static CANLogEntry canLog[CAN_LOG_SIZE];
 static int canLogHead = 0;
 static int canLogCount = 0;
 
-void wifiLogCAN(uint32_t id, uint8_t *data, uint8_t len)
+void wifiLogCAN(uint32_t id, uint8_t *data, uint8_t len, bool extd)
 {
     canLog[canLogHead] = { id, {0}, len, millis() };
     memcpy(canLog[canLogHead].data, data, len < 8 ? len : 8);
     canLogHead = (canLogHead + 1) % CAN_LOG_SIZE;
     if (canLogCount < CAN_LOG_SIZE) canLogCount++;
     // Push to any connected SavvyCAN/GVRET client
-    wifi.gvretPushFrame(id, data, len, false);
+    // extd was hard-coded false, so extended-ID frames reached SavvyCAN as
+    // standard IDs. Callers now pass the real flag (defaults to false).
+    wifi.gvretPushFrame(id, data, len, extd);
 }
 
 // SimpBMS frame decoder - returns human-readable description

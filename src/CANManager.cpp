@@ -652,8 +652,10 @@ void CANManager::sendBMWI3BUSCommand()
 
 // ---------------------------------------------------------------------------
 // sendFrame — state guard + non-blocking TX
+// extd: false = 11-bit standard ID (all existing callers), true = 29-bit
+// extended ID (VW CMU balance commands).
 // ---------------------------------------------------------------------------
-void CANManager::sendFrame(uint32_t id, uint8_t *data, uint8_t len)
+void CANManager::sendFrame(uint32_t id, uint8_t *data, uint8_t len, bool extd)
 {
     if (!running) return;
 
@@ -669,7 +671,7 @@ void CANManager::sendFrame(uint32_t id, uint8_t *data, uint8_t len)
     twai_message_t msg;
     memset(&msg, 0, sizeof(msg));
     msg.identifier       = id;
-    msg.extd             = 0;
+    msg.extd             = extd ? 1 : 0;
     msg.data_length_code = (len <= 8) ? len : 8;
     memcpy(msg.data, data, msg.data_length_code);
 
@@ -677,7 +679,7 @@ void CANManager::sendFrame(uint32_t id, uint8_t *data, uint8_t len)
     esp_err_t res = twai_transmit(&msg, 0);
     if (res != ESP_OK && Logger::isDebug())
         Logger::debug("CAN TX err 0x%02X on ID 0x%03X", res, id);
-    wifiLogCAN(id, data, len);
+    wifiLogCAN(id, data, len, extd);
 }
 
 // ---------------------------------------------------------------------------
