@@ -464,7 +464,7 @@ function renderSettingsForm(){
   // We show all slots 1..maxModules that have an override set, plus allow setting any 1..20
   html+=`<div class="sf-group" style="grid-column:span 2">
   <h3>CMU Type &amp; Balance Inhibit (v7)</h3>
-  <div class=\"row\"><label>CMU Type (reboot)</label><select id=\"cmuType\"><option value=\"0\">Tesla UART</option><option value=\"1\">BMW i3 CAN</option><option value=\"2\">BMW i3 Bus Pack</option><option value=\"3\">BMW Mini-E</option><option value=\"4\">BMW PHEV SP06/SP41/SP44</option></select></div>
+  <div class=\"row\"><label>CMU Type (reboot)</label><select id=\"cmuType\"><option value=\"0\">Tesla UART</option><option value=\"1\">BMW i3 CAN</option><option value=\"2\">BMW i3 Bus Pack</option><option value=\"3\">BMW Mini-E</option><option value=\"4\">BMW PHEV SP06/SP41/SP44</option><option value=\"5\">VW CMU (MEB/MQB)</option></select></div>
   <div class=\"row\"><label>Balance Inhibit</label><select id=\"canInhibitEnabled\"><option value=\"0\">GPIO only</option><option value=\"1\">GPIO+CAN charger</option></select></div>
   <div class=\"row\"><label>Charger HB ID</label><input type=\"text\" id=\"chargerHeartbeatID\" style=\"width:80px\" placeholder=\"0x305\"></div>
   <div class=\"row\"><label>Charger active</label><span id=\"chargerStatus\" style=\"font-weight:bold\">--</span></div>
@@ -489,6 +489,7 @@ function renderSettingsForm(){
         <option value="6" ${ov===6?'selected':''}>6S</option>
         <option value="8" ${ov===8?'selected':''}>8S</option>
         <option value="12" ${ov===12?'selected':''}>12S</option>
+        <option value="13" ${ov===13?'selected':''}>13S</option>
         <option value="16" ${ov===16?'selected':''}>16S</option>
       </select>
     </div>`;
@@ -624,6 +625,8 @@ bool WiFiManager::begin()
             defaultCells = 12;
         } else if (settings.cmuType == CMU_BMW_PHEV) {
             defaultCells = 16;
+        } else if (settings.cmuType == CMU_VW) {
+            defaultCells = 12;   // per module: 13 once a module sends cell 13 (see numCells below)
         } else if (settings.numCells > 0) {
             defaultCells = settings.numCells;
         }
@@ -790,7 +793,7 @@ bool WiFiManager::begin()
             bool cmuChanged = false;
             if (!j["cmuType"].isNull()) {
                 int v = j["cmuType"];
-                if (v >= 0 && v <= 4) {
+                if (v >= 0 && v <= CMU_TYPE_MAX) {
                     if (settings.cmuType != (uint8_t)v) {
                         settings.cmuType = (uint8_t)v;
                         changed = true;
@@ -808,7 +811,8 @@ bool WiFiManager::begin()
                     if (idx <= MAX_MODULE_ADDR) {
                         int cv = v.as<int>();
                         // 0 = inherit global, 4/5/6 = Tesla, 8 = PHEV SP44, 12 = i3/Mini-E/i3-Bus, 16 = PHEV SP06/SP41
-                        if (cv == 0 || cv == 4 || cv == 5 || cv == 6 || cv == 8 || cv == 12 || cv == 16) {
+                        // 8/12/13 = VW CMU (13 only on modules 1-9; capped in getModuleCells())
+                        if (cv == 0 || cv == 4 || cv == 5 || cv == 6 || cv == 8 || cv == 12 || cv == 13 || cv == 16) {
                             settings.moduleCells[idx] = (uint8_t)cv;
                             changed = true;
                         }
