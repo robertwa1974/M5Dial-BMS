@@ -163,6 +163,25 @@ static void testCellGuards()
 }
 
 // ---------------------------------------------------------------------------
+static void testPresenceAndCellCount()
+{
+    // Presence needs sub-frames 0 and 1 (cells 1-8) only.
+    CHECK(!vwPresenceComplete(0x00));
+    CHECK(!vwPresenceComplete(0x01));
+    CHECK(!vwPresenceComplete(0x02));
+    CHECK(vwPresenceComplete(0x03));    // 8s module: no sub-frame 2 needed
+    CHECK(vwPresenceComplete(0x07));
+    CHECK(!vwPresenceComplete(0x0C));   // sub-frames 2-3 alone are not enough
+
+    // Cell count from the highest sub-frame ever seen.
+    CHECK_EQ(vwCellsFromSubFrames(0x03), 8);
+    CHECK_EQ(vwCellsFromSubFrames(0x07), 12);
+    CHECK_EQ(vwCellsFromSubFrames(0x0F), 13);
+    CHECK_EQ(vwCellsFromSubFrames(0x0B), 13);   // sub 3 without sub 2 still means 13
+    CHECK_EQ(vwCellsFromSubFrames(0x00), 8);
+}
+
+// ---------------------------------------------------------------------------
 static void testTemperatures()
 {
     VwTempResult r;
@@ -331,6 +350,7 @@ int main()
     testCellIdMap();
     testCellRoundTrip();
     testCellGuards();
+    testPresenceAndCellCount();
     testTemperatures();
     testModuleNumbers();
     testBalstat();
