@@ -49,6 +49,7 @@ public:
     // Configuration setters
     void settempsensor(int tempsensor);
     void setIgnoreCell(float Ignore);
+    float getIgnoreCell() const { return IgnoreCell; }
     void setNumCells(int n);
     int  getNumCells() const;
     // Direct write — used by CAN-sourced slave types (BMW i3)

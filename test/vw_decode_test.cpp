@@ -345,6 +345,38 @@ static void testBalanceLogic()
     CHECK_EQ(cnt, 0);
 }
 
+// ---------------------------------------------------------------------------
+static void testProtectionValues()
+{
+    // Not bleeding: live readings are un-bled and used as-is.
+    CHECK_NEAR(vwProtectionHigh(4.15f, false, true, 4.30f, 100), 4.15f);
+
+    // Bleeding: live + margin ...
+    CHECK_NEAR(vwProtectionHigh(4.15f, true, false, 0.0f, 0), 4.15f + VW_BLEED_OV_MARGIN);
+    // ... or a fresh, higher un-bled snapshot
+    CHECK_NEAR(vwProtectionHigh(4.10f, true, true, 4.19f, VW_SNAP_MAX_AGE_MS), 4.19f);
+    // ... but a snapshot older than the cap is ignored
+    CHECK_NEAR(vwProtectionHigh(4.10f, true, true, 4.19f, VW_SNAP_MAX_AGE_MS + 1),
+               4.10f + VW_BLEED_OV_MARGIN);
+    // ... and a lower snapshot never reduces the value
+    CHECK_NEAR(vwProtectionHigh(4.15f, true, true, 4.00f, 0), 4.15f + VW_BLEED_OV_MARGIN);
+
+    // Stop-at-margin: with OVERV 4.20, a bled live reading of 4.16 trips
+    // (4.16 + 0.05 > 4.20); 4.14 does not.
+    CHECK(vwProtectionHigh(4.16f, true, false, 0.0f, 0) > 4.20f);
+    CHECK(!(vwProtectionHigh(4.14f, true, false, 0.0f, 0) > 4.20f));
+
+    // Pack low leaves out bleeding cells and ignored cells.
+    float cv[13];
+    for (int i = 0; i < 13; i++) cv[i] = 4.10f;
+    cv[2] = 3.95f;    // bleeding, reads low - excluded
+    cv[7] = 4.02f;    // not bleeding - real minimum
+    cv[11] = 0.10f;   // unpopulated input - below ignore threshold
+    CHECK_NEAR(vwLowCellExcluding(cv, 13, (uint16_t)(1u << 2), 0.5f, 5.0f), 4.02f);
+    CHECK_NEAR(vwLowCellExcluding(cv, 13, 0, 0.5f, 5.0f), 3.95f);
+    CHECK_NEAR(vwLowCellExcluding(cv, 13, 0, 0.5f, 3.90f), 3.90f);   // keeps a lower running min
+}
+
 int main()
 {
     testCellIdMap();
@@ -356,6 +388,7 @@ int main()
     testBalstat();
     testBalanceCommands();
     testBalanceLogic();
+    testProtectionValues();
     printf("%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
