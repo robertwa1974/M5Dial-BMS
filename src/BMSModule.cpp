@@ -20,6 +20,8 @@ BMSModule::BMSModule()
     moduleVolt        = 0.0f;
     temperatures[0]   = 0.0f;
     temperatures[1]   = 0.0f;
+    temperatures[2]   = 0.0f;
+    temperatures[3]   = 0.0f;
     lowestTemperature  = 200.0f;
     highestTemperature = -100.0f;
     lowestModuleVolt   = 200.0f;
@@ -218,7 +220,7 @@ float BMSModule::getLowestCellVolt(int cell)
 // ---------------------------------------------------------------------------
 float BMSModule::getTemperature(int temp)
 {
-    if (temp < 0 || temp > 1) return 0.0f;
+    if (temp < 0 || temp > 3) return 0.0f;
     return temperatures[temp];
 }
 
@@ -279,7 +281,10 @@ void BMSModule::setAlerts(uint8_t a)     { alerts = a; }
 
 void BMSModule::settempsensor(int tempsensor) { sensor     = tempsensor; }
 void BMSModule::setIgnoreCell(float Ignore)   { IgnoreCell = Ignore;     }
-void BMSModule::setNumCells(int n)            { if (n >= 1 && n <= 12) numCells = (uint8_t)n; }
+// Upper bound is 16 (size of cellVolt[]). It was 12, which silently rejected
+// BMW PHEV's 16 and left numCells at 6, so getCellVoltage() returned 0 for
+// PHEV cells 7-16.
+void BMSModule::setNumCells(int n)            { if (n >= 1 && n <= 16) numCells = (uint8_t)n; }
 int  BMSModule::getNumCells() const           { return numCells; }
 
 // Direct cell voltage write — used by CAN-sourced slave types (BMW i3 etc.)
@@ -293,9 +298,11 @@ void BMSModule::setCellVoltage(int cell, float v)
     }
 }
 
+// Indices 0-3 are stored (PHEV has 4 sensors; T3/T4 were silently dropped).
+// getLowTemp()/getHighTemp()/getAvgTemp() still use T1/T2 only, as before.
 void BMSModule::setTemperature(int idx, float t)
 {
-    if (idx < 0 || idx > 1) return;
+    if (idx < 0 || idx > 3) return;
     temperatures[idx] = t;
     if (t < lowestTemperature)  lowestTemperature  = t;
     if (t > highestTemperature) highestTemperature = t;

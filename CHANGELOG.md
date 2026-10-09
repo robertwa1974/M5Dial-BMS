@@ -2,6 +2,14 @@
 
 ---
 
+## v7-beta8 — October 2026 (unreleased)
+
+### Bug Fixes
+- **BMW PHEV cells 7–16 showed 0.000 V** — `BMSModule::setNumCells()` rejected anything above 12, so PHEV modules stayed at the default 6 cells and `getCellVoltage()` returned 0 for cells 7–16 on the display and web UI. Those cells were also left out of the module/pack low/high/average cell calculations (0x35A alarms, 0x373 min/max). The limit is now 16, the size of `cellVolt[]`.
+- **BMW PHEV temperatures T3/T4 dropped** — `BMSModule` stored only two temperatures; it now stores four. Display, averages and pack low/high still use T1/T2 only.
+
+---
+
 ## v7-beta7 — June 2026
 
 ### Bug Fixes
