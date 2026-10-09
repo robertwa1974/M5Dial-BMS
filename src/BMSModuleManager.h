@@ -83,8 +83,8 @@ private:
     bool      isFaulted;
     bool      balanceInhibit;   // true = drive mode, skip balancing
     bool      autoBalance;      // true = balance automatically each cycle
-    // VW CMU: module has sent sub-frame 3, i.e. really has a 13th cell
-    bool      vwHasCell13[MAX_MODULE_ADDR + 1];
+    // VW CMU: sub-frames each module has ever sent (cell count, see VWProtocol.h)
+    uint8_t   vwSubSeen[MAX_MODULE_ADDR + 1];
     // VW CMU balancing state (reference balcnt duty cycle)
     uint8_t   vwBalCnt;
     bool      vwBalCmdSent;     // balance frames sent since the last stop

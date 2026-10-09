@@ -88,6 +88,32 @@ inline int vwDecodeCells(int sub, const uint8_t *buf, uint16_t *mv)
 }
 
 // ---------------------------------------------------------------------------
+// Presence and cell count from sub-frames (deviation - the reference writes
+// cells as they arrive and never drops a module).
+//
+// A module counts as present once sub-frames 0 and 1 (cells 1-8) have both
+// arrived since the last presence update, so an 8s MEB module that never
+// sends a valid sub-frame 2 still appears. Cells 9-13 are filled in as their
+// sub-frames arrive.
+// The cell count follows the highest sub-frame ever received:
+//   sub-frame 3 seen -> 13 cells, sub-frame 2 seen -> 12, otherwise 8.
+// (A per-module cell override in settings takes precedence.)
+// ---------------------------------------------------------------------------
+#define VW_PRESENCE_SUBFRAMES   0x03    // sub-frames 0 and 1
+
+inline bool vwPresenceComplete(uint8_t framesRx)
+{
+    return (framesRx & VW_PRESENCE_SUBFRAMES) == VW_PRESENCE_SUBFRAMES;
+}
+
+inline int vwCellsFromSubFrames(uint8_t subSeen)
+{
+    if (subSeen & 0x08) return 13;
+    if (subSeen & 0x04) return 12;
+    return 8;
+}
+
+// ---------------------------------------------------------------------------
 // Temperature results
 // The reference only overwrites the sensors a frame actually carries; the
 // others keep their previous value. VW_T_UNCHANGED models that.

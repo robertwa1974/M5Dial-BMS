@@ -43,7 +43,7 @@ CANManager::CANManager()
     memset(phevdata, 0, sizeof(phevdata));
     memset(phevAcc,  0, sizeof(phevAcc));
     memset(vwdata,   0, sizeof(vwdata));
-    memset(vwAcc,    0, sizeof(vwAcc));
+    memset(vwFramesRx, 0, sizeof(vwFramesRx));
     for (int m = 0; m <= VW_MAX_MODS; m++)
         for (int t = 0; t < VW_TEMPS_PER_MOD; t++)
             vwdata[m].temp[t] = VW_TEMP_INVALID;   // until a sensor reports
@@ -533,21 +533,21 @@ bool CANManager::processVwFrame(const twai_message_t &msg)
             return true;
         }
 
+        // Cells are written as each sub-frame arrives (as the reference does),
+        // so cells 9-13 fill in whenever their sub-frames turn up.
         uint16_t mv[4];
         int n = vwDecodeCells(sub, buf, mv);
         for (int k = 0; k < n; k++)
-            vwAcc[mod].cells[sub * 4 + k] = mv[k] * 0.001f;
-        vwAcc[mod].framesRx |= (uint8_t)(1 << sub);
-        if (sub == 3) vwdata[mod].hasCell13 = true;
+            vwdata[mod].cellV[sub * 4 + k] = mv[k] * 0.001f;
+        vwdata[mod].subSeen |= (uint8_t)(1 << sub);
+        vwFramesRx[mod]     |= (uint8_t)(1 << sub);
 
-        // Commit once sub-frames 0-2 (cells 1-12) are in. Cell 13 (sub-frame
-        // 3) is carried along when present, not waited for: 12-cell modules
-        // may never send it. (Reference writes cells as they arrive.)
-        if ((vwAcc[mod].framesRx & 0x07) == 0x07) {
-            memcpy(vwdata[mod].cellV, vwAcc[mod].cells, sizeof(vwAcc[mod].cells));
+        // Presence once sub-frames 0-1 (cells 1-8) have both arrived: an 8s
+        // module that never sends a valid sub-frame 2 still appears.
+        if (vwPresenceComplete(vwFramesRx[mod])) {
             vwdata[mod].fresh      = true;
             vwdata[mod].lastSeenMs = millis();
-            vwAcc[mod].framesRx    = 0;
+            vwFramesRx[mod]        = 0;
         }
         return true;
     }

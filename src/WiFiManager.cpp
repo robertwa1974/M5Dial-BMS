@@ -626,7 +626,7 @@ bool WiFiManager::begin()
         } else if (settings.cmuType == CMU_BMW_PHEV) {
             defaultCells = 16;
         } else if (settings.cmuType == CMU_VW) {
-            defaultCells = 12;   // per module: 13 once a module sends cell 13 (see numCells below)
+            defaultCells = 12;   // per module: 8/12/13 from the sub-frames received (see numCells below)
         } else if (settings.numCells > 0) {
             defaultCells = settings.numCells;
         }

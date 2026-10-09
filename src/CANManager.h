@@ -52,7 +52,7 @@ struct VwSlaveData {
     float    cellV[VW_CELLS_PER_MOD];  // 13 cells max (modules 1-9), 12 on 10-16
     float    temp[VW_TEMPS_PER_MOD];   // VW_TEMP_INVALID until a sensor reports
     uint32_t balstat;                  // MEB balance status bits (0x16A9547x or type 1)
-    bool     hasCell13;                // sub-frame 3 seen - module really has 13 cells
+    uint8_t  subSeen;                  // sub-frames ever received (bit n = sub-frame n)
     bool     fresh;
     uint32_t lastSeenMs;               // last guard-passing CELL frame (presence)
 };
@@ -141,12 +141,10 @@ private:
     uint32_t i3BusLastReplySeenMs;  // millis() of the last real 0x100-0x1FF reply
     uint32_t i3BusTxStartMs;        // millis() when steady TX began (for backoff timing)
 
-    // VW CMU staging + accumulator
+    // VW CMU staging. Cells are written straight into vwdata as each
+    // sub-frame arrives; vwFramesRx only tracks presence (sub-frames 0-1).
     VwSlaveData vwdata[VW_MAX_MODS + 1];
-    struct VwCellAcc {
-        float   cells[VW_CELLS_PER_MOD];
-        uint8_t framesRx;   // bits 0..3 = sub-frames 0..3; commit when bits 0-2 set
-    } vwAcc[VW_MAX_MODS + 1];
+    uint8_t     vwFramesRx[VW_MAX_MODS + 1];   // bits 0..3 = sub-frames since last presence update
     volatile bool vwBalancing;        // true = skip cell decode (modules bleeding)
     uint32_t vwLastReplySeenMs;       // millis() of the last decoded VW frame
     uint32_t vwTxStartMs;             // millis() when polling began (backoff timing)

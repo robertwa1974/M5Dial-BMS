@@ -64,7 +64,7 @@ BMSModuleManager::BMSModuleManager()
     isFaulted       = false;
     balanceInhibit  = false;
     autoBalance     = false;
-    memset(vwHasCell13, 0, sizeof(vwHasCell13));
+    memset(vwSubSeen, 0, sizeof(vwSubSeen));
     vwBalCnt        = 0;
     vwBalCmdSent    = false;
 }
@@ -701,14 +701,16 @@ int BMSModuleManager::getModuleCells(int addr)
     }
     // VW CMU: modules 1-9 can carry 13 cells (sub-frame 3), 10-16 at most 12
     // (reference cell-ID table, BMSModuleManager.cpp:430-718). Default follows
-    // what the module actually sends: 13 once sub-frame 3 has been seen, else
-    // 12, so 12s modules don't show a phantom 0 V cell 13. A per-module
-    // override (e.g. 8 for 8s MEB modules) wins, capped at the module's max.
+    // what the module actually sends (vwCellsFromSubFrames): 13 once
+    // sub-frame 3 has been seen, 12 once sub-frame 2 has, otherwise 8. So 12s
+    // modules don't show a phantom 0 V cell 13, and unconfigured 8s modules
+    // appear with 8. A per-module override wins, capped at the module's max.
     if (settings.cmuType == CMU_VW) {
         int maxCells = (addr <= VW_STD_MODS) ? VW_CELLS_PER_MOD : 12;
         uint8_t ov = settings.moduleCells[addr];
         int n = (ov >= 1 && ov <= maxCells) ? (int)ov
-              : (vwHasCell13[addr] ? VW_CELLS_PER_MOD : 12);
+              : vwCellsFromSubFrames(vwSubSeen[addr]);
+        if (n > maxCells) n = maxCells;
         modules[addr].setNumCells(n);
         return n;
     }
@@ -820,11 +822,11 @@ void BMSModuleManager::getAllVoltTempFromPHEV()
 // Called instead of UART getAllVoltTemp() when cmuType == CMU_VW.
 // Reads VwSlaveData staging buffers populated by CANManager's RX task.
 // Modeled on getAllVoltTempFromPHEV(). Up to VW_MAX_MODS (16) modules with
-// 12 or 13 cells and up to 3 temperatures each.
+// 8, 12 or 13 cells and up to 3 temperatures each.
 //
 // Presence follows cell-frame freshness only (VwSlaveData::lastSeenMs is set
-// when a module's cells are committed). Temperature-only traffic never marks
-// a module alive - it would show 0 V cells and trip a pack undervoltage.
+// once sub-frames 0-1 have arrived). Temperature-only traffic never marks a
+// module alive - it would show 0 V cells and trip a pack undervoltage.
 // ---------------------------------------------------------------------------
 void BMSModuleManager::getAllVoltTempFromVW()
 {
@@ -843,7 +845,7 @@ void BMSModuleManager::getAllVoltTempFromVW()
         if (!alive) continue;
 
         numFoundModules++;
-        vwHasCell13[x] = d.hasCell13;
+        vwSubSeen[x] = d.subSeen;
         int n = getModuleCells(x);   // also sets the module's numCells
 
         float modV = 0.0f;
