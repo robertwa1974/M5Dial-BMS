@@ -904,6 +904,9 @@ void BMSModuleManager::getAllVoltTempFromVW()
 {
     packVolt = 0.0f;
     numFoundModules = 0;
+    // Pack temperature range for this cycle (0x373 min/max temp)
+    float loT = 200.0f;
+    float hiT = -100.0f;
 
     for (int x = 1; x <= VW_MAX_MODS; x++) {
         VwSlaveData d;
@@ -932,6 +935,13 @@ void BMSModuleManager::getAllVoltTempFromVW()
         // IgnoreTempThresh on the display, web UI and pack averages.
         for (int t = 0; t < VW_TEMPS_PER_MOD; t++) {
             modules[x].setTemperature(t, d.temp[t]);
+            // Pack range: real sensors only (behind IgnoreTempThresh, and
+            // never the absent-sensor placeholder)
+            float tv = d.temp[t];
+            if (tv > settings.IgnoreTempThresh && tv > VW_TEMP_INVALID + 0.5f) {
+                if (tv < loT) loT = tv;
+                if (tv > hiT) hiT = tv;
+            }
         }
 
         // No fault frame is decoded for VW CMUs (the reference has none)
@@ -943,6 +953,13 @@ void BMSModuleManager::getAllVoltTempFromVW()
 
     int np = (settings.numParallel > 0) ? settings.numParallel : BMS_NUM_PARALLEL;
     if (np > 1) packVolt /= np;
+
+    // Current pack temperature range, so 0x373 carries real temperatures.
+    // With no valid sensor these stay at the "unset" sentinels (200 / -100),
+    // which sendBatterySummary() replaces with the average / 25 C.
+    // (Tesla's getAllVoltTemp() keeps running extremes since boot instead.)
+    lowestPackTemp  = loT;
+    highestPackTemp = hiT;
 
     // Un-bled snapshot: only while no cell is bleeding and VW_SETTLE_MS after
     // the last stop, so these readings are free of balance-current drop.
