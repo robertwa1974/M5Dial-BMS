@@ -67,6 +67,11 @@ BMSModuleManager::BMSModuleManager()
     memset(vwSubSeen, 0, sizeof(vwSubSeen));
     vwBalCnt        = 0;
     vwBalCmdSent    = false;
+    vwBleeding      = false;
+    memset(vwBleedMask, 0, sizeof(vwBleedMask));
+    vwLastStopMs    = 0;
+    vwSnapHigh      = 0.0f;
+    vwSnapMs        = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -153,50 +158,86 @@ void BMSModuleManager::balanceCells()
 // CAN charger) and the pack is not faulted.
 //
 // Gate: high cell > settings.balanceVoltage AND high > low + balanceHyst.
-// Duty cycle (vwBalanceAction): counter 1 sends stop frames and resumes cell
-// measurement; 11, 15, 20 ... 55 (re)send per-module masks; wraps after 60.
-// At 500 ms that is ~5 s measuring, ~25 s bleeding. Mask: cells above the
-// lowest pack cell + balanceHyst.
-// Cell decode is suppressed in CANManager while any module is bleeding.
+// Duty cycle (vwBalanceAction): counter 1 sends stop frames and starts the
+// un-bled measuring window; 11 picks the cells to bleed; 15, 20 ... 55
+// re-send the same masks; wraps after 60. At 500 ms that is ~5 s measuring,
+// ~25 s bleeding. Mask: cells above the lowest pack cell + balanceHyst.
 //
 // Deviations from the reference:
 //   - modules 1-12 only (no balance ID pair above 12; the reference falls
 //     through "default: break;" and re-sends on module 12's ID)
 //   - stop frames are sent when the gate drops mid-cycle (the reference just
 //     stops calling balanceCells() and leaves modules bleeding)
+//   - cells stay decoded while bleeding (reference freezes them). Selection
+//     uses un-bled readings: the first send needs a snapshot no older than
+//     VW_SNAP_MAX_AGE_MS; re-sends reuse its masks (the reference recomputes
+//     from frozen readings, which gives the same masks)
+//   - while bleeding, the bleed stops early for a fresh measurement once
+//     getProtectionHighCellVolt() exceeds OVERV (VW_BLEED_OV_MARGIN below
+//     OVERV on live readings, or a fresh un-bled snapshot above OVERV)
 // ---------------------------------------------------------------------------
 void BMSModuleManager::balanceCellsVW()
 {
-    float hi = getHighCellVolt();
-    float lo = getLowCellVolt();
-    if (!vwBalanceGate(hi, lo, settings.balanceVoltage, settings.balanceHyst)) {
-        stopBalancingVW();
-        return;
+    if (vwBleeding) {
+        // Bled readings are low - only the overvoltage stop applies while
+        // bleeding; the gate was decided on un-bled readings at the first send.
+        if (getProtectionHighCellVolt() > settings.OverVSetpoint) {
+            Logger::warn("VW balance: cell near OVERV while bleeding - stopping to re-measure");
+            stopBalancingVW();
+            return;
+        }
+    } else {
+        float hi = getHighCellVolt();
+        float lo = getLowCellVolt();
+        if (!vwBalanceGate(hi, lo, settings.balanceVoltage, settings.balanceHyst)) {
+            stopBalancingVW();
+            return;
+        }
     }
 
     VwBalAction act = vwBalanceAction(vwBalCnt);
     if (act == VW_BAL_STOP) {
         can.requestVwBalanceStop();
         vwBalCmdSent = false;
-        can.setVwBalancing(false);   // measure for the next ~5 s
+        vwBleeding   = false;            // measure for the next ~5 s
+        memset(vwBleedMask, 0, sizeof(vwBleedMask));
+        vwLastStopMs = millis();
     } else if (act == VW_BAL_SEND) {
-        bool     any = false;
         uint16_t sendMods = 0;
         uint16_t masks[VW_MAX_BAL_MODS + 1] = {0};
-        for (int x = 1; x <= VW_MAX_BAL_MODS; x++) {
-            if (!modules[x].isExisting()) continue;
-            int   n = getModuleCells(x);
-            float cv[VW_CELLS_PER_MOD];
-            for (int c = 0; c < n; c++) cv[c] = modules[x].getCellVoltage(c);
-            masks[x]  = vwBalanceMask(cv, n, lo, settings.balanceHyst);
-            sendMods |= (uint16_t)(1u << x);
-            if (masks[x]) any = true;
-            Logger::debug("VW balance: module %d mask 0x%04X", x, masks[x]);
+        if (vwBleeding) {
+            // Re-send the masks chosen from the un-bled snapshot
+            for (int x = 1; x <= VW_MAX_BAL_MODS; x++) {
+                if (!modules[x].isExisting()) continue;
+                masks[x]  = vwBleedMask[x];
+                sendMods |= (uint16_t)(1u << x);
+            }
+            can.requestVwBalance(sendMods, masks);
+        } else if (vwSnapMs == 0 || (millis() - vwSnapMs) > (uint32_t)VW_SNAP_MAX_AGE_MS) {
+            // No fresh un-bled snapshot - don't start a bleed; restart the
+            // cycle so the next window measures again.
+            Logger::warn("VW balance: no fresh un-bled reading - not starting a bleed");
+            vwBalCnt = 0;
+        } else {
+            // Not bleeding and settled: live readings are un-bled
+            float lo  = getLowCellVolt();
+            bool  any = false;
+            for (int x = 1; x <= VW_MAX_BAL_MODS; x++) {
+                if (!modules[x].isExisting()) continue;
+                int   n = getModuleCells(x);
+                float cv[VW_CELLS_PER_MOD];
+                for (int c = 0; c < n; c++) cv[c] = modules[x].getCellVoltage(c);
+                masks[x]       = vwBalanceMask(cv, n, lo, settings.balanceHyst);
+                vwBleedMask[x] = masks[x];
+                sendMods      |= (uint16_t)(1u << x);
+                if (masks[x]) any = true;
+                Logger::debug("VW balance: module %d mask 0x%04X", x, masks[x]);
+            }
+            can.requestVwBalance(sendMods, masks);
+            vwBalCmdSent = true;
+            vwBleeding   = any;
+            if (!any) vwBalCnt = 0;      // BMSModuleManager.cpp:218-220
         }
-        can.requestVwBalance(sendMods, masks);
-        vwBalCmdSent = true;
-        can.setVwBalancing(any);
-        if (!any) vwBalCnt = 0;      // BMSModuleManager.cpp:218-220
     }
     vwBalCnt++;
 }
@@ -210,9 +251,11 @@ void BMSModuleManager::stopBalancingVW()
     if (vwBalCmdSent) {
         can.requestVwBalanceStop();
         vwBalCmdSent = false;
+        vwLastStopMs = millis();
         Logger::info("VW balancing stopped");
     }
-    can.setVwBalancing(false);
+    vwBleeding = false;
+    memset(vwBleedMask, 0, sizeof(vwBleedMask));
     vwBalCnt = 0;
 }
 
@@ -502,6 +545,19 @@ void BMSModuleManager::setSensors(int sensor, float Ignore)
 float BMSModuleManager::getLowCellVolt()
 {
     LowCellVolt = 5.0f;
+    // VW CMU while bleeding: bled cells read low, so leave them out of the
+    // pack minimum (they were above low + balanceHyst when selected)
+    if (settings.cmuType == CMU_VW && vwBleeding) {
+        for (int x = 1; x <= VW_MAX_MODS; x++) {
+            if (!modules[x].isExisting()) continue;
+            int   n = modules[x].getNumCells();
+            float cv[16];
+            for (int c = 0; c < n && c < 16; c++) cv[c] = modules[x].getCellVoltage(c);
+            LowCellVolt = vwLowCellExcluding(cv, n, vwBleedMask[x],
+                                             modules[x].getIgnoreCell(), LowCellVolt);
+        }
+        return LowCellVolt;
+    }
     for (int x = 1; x <= MAX_MODULE_ADDR; x++)
         if (modules[x].isExisting() && modules[x].getLowCellV() < LowCellVolt)
             LowCellVolt = modules[x].getLowCellV();
@@ -515,6 +571,19 @@ float BMSModuleManager::getHighCellVolt()
         if (modules[x].isExisting() && modules[x].getHighCellV() > HighCellVolt)
             HighCellVolt = modules[x].getHighCellV();
     return HighCellVolt;
+}
+
+// See VWProtocol.h vwProtectionHigh(): identical to getHighCellVolt() unless
+// in VW CMU mode with cells bleeding.
+float BMSModuleManager::getProtectionHighCellVolt()
+{
+    float live = getHighCellVolt();
+    if (settings.cmuType != CMU_VW) return live;
+    // Cells are still recovering for VW_SETTLE_MS after a stop: treat as bled
+    bool settling = (vwLastStopMs != 0) &&
+                    (millis() - vwLastStopMs) < (uint32_t)VW_SETTLE_MS;
+    return vwProtectionHigh(live, vwBleeding || settling, vwSnapMs != 0, vwSnapHigh,
+                            millis() - vwSnapMs);
 }
 
 float BMSModuleManager::getPackVoltage()    { return packVolt;        }
@@ -874,4 +943,13 @@ void BMSModuleManager::getAllVoltTempFromVW()
 
     int np = (settings.numParallel > 0) ? settings.numParallel : BMS_NUM_PARALLEL;
     if (np > 1) packVolt /= np;
+
+    // Un-bled snapshot: only while no cell is bleeding and VW_SETTLE_MS after
+    // the last stop, so these readings are free of balance-current drop.
+    if (!vwBleeding && numFoundModules > 0 &&
+        (millis() - vwLastStopMs) >= (uint32_t)VW_SETTLE_MS) {
+        vwSnapHigh = getHighCellVolt();
+        vwSnapMs   = millis();
+        if (vwSnapMs == 0) vwSnapMs = 1;   // 0 means "none"
+    }
 }

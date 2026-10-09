@@ -37,7 +37,7 @@ CANManager::CANManager()
       lastChargerSeen(0), canCurrentA(0.0f), externalDeviceSeen(false),
       phevNextMod(0), phevMesCycle(0), phevTestCycle(0), phevBalCells(false),
       bmwI3Bus_counter(0), i3BusLastReplySeenMs(0), i3BusTxStartMs(0),
-      vwBalancing(false), vwLastReplySeenMs(0), vwTxStartMs(0),
+      vwLastReplySeenMs(0), vwTxStartMs(0),
       vwBalQueue(nullptr)
 {
     memset(i3data,   0, sizeof(i3data));
@@ -546,15 +546,11 @@ bool CANManager::processVwFrame(const twai_message_t &msg)
         if (mod < 1 || mod > VW_MAX_MODS) return true;
         if (!vwCellFrameValid(sub, buf, dlc)) return true;   // initialising / spoof module
 
-        // Reference skips cell decode entirely while balancing
-        // (BMSModuleManager.cpp:432) - bleed current skews the readings.
-        // Deviation: the reference never drops a module, but ours time out
-        // after VW_TIMEOUT_MS, so a module that has already reported keeps
-        // its presence alive through the ~25 s bleed window.
-        if (vwBalancing) {
-            if (vwdata[mod].lastSeenMs != 0) vwdata[mod].lastSeenMs = millis();
-            return true;
-        }
+        // Deviation: the reference skips cell decode entirely while
+        // balancing (BMSModuleManager.cpp:432). Cells are always decoded here
+        // so the display and CAN TX stay live and a dead module still times
+        // out; BMSModuleManager keeps bled readings out of balance selection
+        // and overvoltage checks (see VWProtocol.h).
 
         // Cells are written as each sub-frame arrives (as the reference does),
         // so cells 9-13 fill in whenever their sub-frames turn up.
@@ -995,7 +991,9 @@ void CANManager::sendBatterySummary()
 
     float packV   = bms.getPackVoltage();
     float lowC    = bms.getLowCellVolt();
-    float highC   = bms.getHighCellVolt();
+    // Overvoltage-safe pack high: == getHighCellVolt() except in VW CMU mode
+    // while cells are bleeding (bled cells read low, see VWProtocol.h)
+    float highC   = bms.getProtectionHighCellVolt();
     float avgT    = bms.getAvgTemperature();
     bool  faulted = bms.isFaultedState();
 

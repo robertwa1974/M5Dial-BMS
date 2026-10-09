@@ -307,6 +307,44 @@ inline uint16_t vwBalanceMask(const float *cellV, int numCells, float lowCell, f
 }
 
 // ---------------------------------------------------------------------------
+// Bleeding vs. protection (deviation from the reference)
+//
+// The reference stops decoding cells while modules bleed, so everything
+// downstream sees voltages up to ~25 s old. Here cells are always decoded,
+// but a bleeding cell reads low (balance current through the cell tap), so:
+//   - balance selection uses un-bled readings: the first send of each cycle
+//     needs a snapshot from the measuring window no older than
+//     VW_SNAP_MAX_AGE_MS, and later sends in the same cycle reuse its masks
+//   - the pack-high value used for overvoltage (0x35A alarm, 0x373 max cell)
+//     is vwProtectionHigh(): while bleeding, live high + VW_BLEED_OV_MARGIN,
+//     or the un-bled snapshot high if that is fresh and higher
+//   - while bleeding, the bleed stops (for a fresh measurement) once that
+//     value exceeds OVERV, i.e. at VW_BLEED_OV_MARGIN below OVERV live
+//   - the pack-low value leaves out cells that are bleeding
+//     (vwLowCellExcluding), so bled cells don't depress the 0x373 minimum
+// ---------------------------------------------------------------------------
+inline float vwProtectionHigh(float liveHigh, bool bleeding,
+                              bool haveSnap, float snapHigh, uint32_t snapAgeMs)
+{
+    if (!bleeding) return liveHigh;                    // live readings are un-bled
+    float v = liveHigh + VW_BLEED_OV_MARGIN;
+    if (haveSnap && snapAgeMs <= VW_SNAP_MAX_AGE_MS && snapHigh > v) v = snapHigh;
+    return v;
+}
+
+// Lowest cell above ignoreBelow, leaving out cells whose bit is set in
+// excludeMask. Returns 'current' if no cell qualifies (or a lower value).
+inline float vwLowCellExcluding(const float *cellV, int numCells, uint16_t excludeMask,
+                                float ignoreBelow, float current)
+{
+    for (int i = 0; i < numCells && i < 16; i++) {
+        if (excludeMask & (1u << i)) continue;
+        if (cellV[i] > ignoreBelow && cellV[i] < current) current = cellV[i];
+    }
+    return current;
+}
+
+// ---------------------------------------------------------------------------
 // vwBalanceAction - balance duty-cycle state machine (BMSModuleManager.cpp:62-68,
 // 223, 345). Called once per VW_BAL_TICK_MS with the running counter:
 //   counter > 60       -> wrap to 0

@@ -103,9 +103,6 @@ public:
 
     // VW CMU slave data (addr 1..VW_MAX_MODS)
     bool getVwSlaveData(int addr, VwSlaveData &out);
-    // Reference suppresses cell decode while balancing (BMSModuleManager.cpp:432);
-    // BMSModuleManager sets this from the balance state machine.
-    void setVwBalancing(bool active) { vwBalancing = active; }
     // VW balance commands (EXTENDED IDs). Called from loop(); the frames are
     // sent by the VW CAN task so loop() never blocks on the 1 ms gaps.
     // modules: bit m = module m (1..12) gets mask[m]; absent modules get none.
@@ -159,7 +156,6 @@ private:
     // sub-frame arrives; vwFramesRx only tracks presence (sub-frames 0-1).
     VwSlaveData vwdata[VW_MAX_MODS + 1];
     uint8_t     vwFramesRx[VW_MAX_MODS + 1];   // bits 0..3 = sub-frames since last presence update
-    volatile bool vwBalancing;        // true = skip cell decode (modules bleeding)
     uint32_t vwLastReplySeenMs;       // millis() of the last decoded VW frame
     uint32_t vwTxStartMs;             // millis() when polling began (backoff timing)
 

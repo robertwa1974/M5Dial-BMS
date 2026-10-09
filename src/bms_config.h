@@ -261,7 +261,9 @@ extern const uint8_t BMW_PHEV_FINAL_XOR[12];
 //   Guards (BMSModuleManager.cpp:687-702): sub 0-1 dropped if buf[2], buf[5]
 //   or buf[7] == 0xFF; other subs dropped if buf[2] == 0xFF (module
 //   initialising, or a "spoof module").
-//   Cell decode is skipped while balancing (BMSModuleManager.cpp:432).
+//   The reference skips cell decode while balancing (BMSModuleManager.cpp:432).
+//   Here cells are always decoded (display, CAN TX); balance selection and
+//   overvoltage checks use un-bled readings instead - see VWProtocol.h.
 //
 // Temperatures - EXTENDED IDs (VWBMSV2.ino:2864-2880,
 // BMSModuleManager.cpp:388-428, BMSModule.cpp:51-97):
@@ -293,6 +295,10 @@ extern const uint8_t BMW_PHEV_FINAL_XOR[12];
 #define VW_BAL_TICK_MS          500     // balance state-machine tick (same loop)
 #define VW_TIMEOUT_MS           3000    // module offline after this long without cell frames
 #define VW_TEMP_INVALID         -100.0f // sensor absent (below IgnoreTempThresh default -70)
+// Balancing vs. protection (deviation from the reference - see VWProtocol.h)
+#define VW_SETTLE_MS            1000    // after a stop, readings count as un-bled after this
+#define VW_SNAP_MAX_AGE_MS      3000    // un-bled snapshot trusted for OV checks for this long
+#define VW_BLEED_OV_MARGIN      0.05f   // V: bleeding cells read low by up to this (bench-check)
 
 // ---------------------------------------------------------------------------
 // EEPROM / NVS settings
