@@ -64,6 +64,7 @@ BMSModuleManager::BMSModuleManager()
     isFaulted       = false;
     balanceInhibit  = false;
     autoBalance     = false;
+    memset(vwHasCell13, 0, sizeof(vwHasCell13));
 }
 
 // ---------------------------------------------------------------------------
@@ -621,6 +622,19 @@ int BMSModuleManager::getModuleCells(int addr)
         modules[addr].setNumCells(BMW_PHEV_CELLS_PER_MOD);
         return BMW_PHEV_CELLS_PER_MOD;
     }
+    // VW CMU: modules 1-9 can carry 13 cells (sub-frame 3), 10-16 at most 12
+    // (reference cell-ID table, BMSModuleManager.cpp:430-718). Default follows
+    // what the module actually sends: 13 once sub-frame 3 has been seen, else
+    // 12, so 12s modules don't show a phantom 0 V cell 13. A per-module
+    // override (e.g. 8 for 8s MEB modules) wins, capped at the module's max.
+    if (settings.cmuType == CMU_VW) {
+        int maxCells = (addr <= VW_STD_MODS) ? VW_CELLS_PER_MOD : 12;
+        uint8_t ov = settings.moduleCells[addr];
+        int n = (ov >= 1 && ov <= maxCells) ? (int)ov
+              : (vwHasCell13[addr] ? VW_CELLS_PER_MOD : 12);
+        modules[addr].setNumCells(n);
+        return n;
+    }
     uint8_t ov = settings.moduleCells[addr];
     int n = (ov >= 1 && ov <= 6) ? (int)ov
           : ((settings.numCells >= 1 && settings.numCells <= 6) ? (int)settings.numCells : 6);
@@ -715,6 +729,62 @@ void BMSModuleManager::getAllVoltTempFromPHEV()
         // Map 32-bit error word to 8-bit faults field (non-zero = fault)
         uint8_t faultByte = (d.error != 0) ? 0x01 : 0x00;
         modules[x].setFaults(faultByte);
+        modules[x].setAlerts(0);
+
+        packVolt += modV;
+    }
+
+    int np = (settings.numParallel > 0) ? settings.numParallel : BMS_NUM_PARALLEL;
+    if (np > 1) packVolt /= np;
+}
+
+// ---------------------------------------------------------------------------
+// getAllVoltTempFromVW - populate BMSModule objects from VW CMU CAN data
+// Called instead of UART getAllVoltTemp() when cmuType == CMU_VW.
+// Reads VwSlaveData staging buffers populated by CANManager's RX task.
+// Modeled on getAllVoltTempFromPHEV(). Up to VW_MAX_MODS (16) modules with
+// 12 or 13 cells and up to 3 temperatures each.
+//
+// Presence follows cell-frame freshness only (VwSlaveData::lastSeenMs is set
+// when a module's cells are committed). Temperature-only traffic never marks
+// a module alive - it would show 0 V cells and trip a pack undervoltage.
+// ---------------------------------------------------------------------------
+void BMSModuleManager::getAllVoltTempFromVW()
+{
+    packVolt = 0.0f;
+    numFoundModules = 0;
+
+    for (int x = 1; x <= VW_MAX_MODS; x++) {
+        VwSlaveData d;
+        if (!can.getVwSlaveData(x, d)) {
+            // No cell frames ever received for this module
+            continue;
+        }
+
+        bool alive = (millis() - d.lastSeenMs) < (uint32_t)VW_TIMEOUT_MS;
+        modules[x].setExists(alive);
+        if (!alive) continue;
+
+        numFoundModules++;
+        vwHasCell13[x] = d.hasCell13;
+        int n = getModuleCells(x);   // also sets the module's numCells
+
+        float modV = 0.0f;
+        for (int c = 0; c < n; c++) {
+            modules[x].setCellVoltage(c, d.cellV[c]);
+            if (d.cellV[c] > settings.IgnoreVolt && d.cellV[c] < 5.0f)
+                modV += d.cellV[c];
+        }
+        modules[x].setModuleVoltage(modV);
+
+        // Absent sensors are VW_TEMP_INVALID (-100 C): filtered by
+        // IgnoreTempThresh on the display, web UI and pack averages.
+        for (int t = 0; t < VW_TEMPS_PER_MOD; t++) {
+            modules[x].setTemperature(t, d.temp[t]);
+        }
+
+        // No fault frame is decoded for VW CMUs (the reference has none)
+        modules[x].setFaults(0);
         modules[x].setAlerts(0);
 
         packVolt += modV;

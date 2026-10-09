@@ -56,6 +56,8 @@ public:
     void  getAllVoltTempFromCAN();
     // BMW PHEV CAN-sourced data path
     void  getAllVoltTempFromPHEV();
+    // VW CMU (MEB / MQB) CAN-sourced data path
+    void  getAllVoltTempFromVW();
 
     // Per-module accessor
     BMSModule& getModule(int addr);
@@ -79,4 +81,6 @@ private:
     bool      isFaulted;
     bool      balanceInhibit;   // true = drive mode, skip balancing
     bool      autoBalance;      // true = balance automatically each cycle
+    // VW CMU: module has sent sub-frame 3, i.e. really has a 13th cell
+    bool      vwHasCell13[MAX_MODULE_ADDR + 1];
 };

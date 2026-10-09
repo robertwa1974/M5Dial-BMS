@@ -8,6 +8,10 @@
 //   - Skip sendI3WakeFrame() for BMWI3BUS variant
 //   - New accessors: hasExternalDevice(), getI3LastSeen(), getPhevSlaveData()
 //   - 0x373 extended frame: min/max cell mV + min/max temp in Kelvin (zombieverter format, unconditional)
+// v7 VW CMU (MEB / MQB):
+//   - processVwFrame(): cells (std 0x1B0-0x1EE), temperatures and MEB balance
+//     status (ext IDs), decoders in VWProtocol.h
+//   - New accessor: getVwSlaveData()
 // =============================================================================
 #include "CANManager.h"
 #include "bms_config.h"
@@ -25,15 +29,21 @@ const uint8_t BMW_PHEV_FINAL_XOR[12] = {
 
 CANManager::CANManager()
     : running(false), rxTaskHandle(nullptr), phevCmdTaskHandle(nullptr),
-      i3BusCmdTaskHandle(nullptr),
+      i3BusCmdTaskHandle(nullptr), vwPollTaskHandle(nullptr),
       lastChargerSeen(0), canCurrentA(0.0f), externalDeviceSeen(false),
       phevNextMod(0), phevMesCycle(0), phevTestCycle(0), phevBalCells(false),
-      bmwI3Bus_counter(0), i3BusLastReplySeenMs(0), i3BusTxStartMs(0)
+      bmwI3Bus_counter(0), i3BusLastReplySeenMs(0), i3BusTxStartMs(0),
+      vwBalancing(false), vwLastReplySeenMs(0), vwTxStartMs(0)
 {
     memset(i3data,   0, sizeof(i3data));
     memset(i3acc,    0, sizeof(i3acc));
     memset(phevdata, 0, sizeof(phevdata));
     memset(phevAcc,  0, sizeof(phevAcc));
+    memset(vwdata,   0, sizeof(vwdata));
+    memset(vwAcc,    0, sizeof(vwAcc));
+    for (int m = 0; m <= VW_MAX_MODS; m++)
+        for (int t = 0; t < VW_TEMPS_PER_MOD; t++)
+            vwdata[m].temp[t] = VW_TEMP_INVALID;   // until a sensor reports
     phevCrc8.begin();
 }
 
@@ -220,6 +230,15 @@ void CANManager::processRxFrame(const twai_message_t &msg)
             canCurrentA = raw * 0.1f;
         }
     }
+
+    // -----------------------------------------------------------------------
+    // VW CMU (MEB / MQB) - gated on CMU_VW here, and on ID range + extd inside
+    // processVwFrame(). 0x1B0-0x1EE overlaps the BMWI3BUS range, so the
+    // cmuType gate is mandatory. Every VW frame returns here, before the
+    // externalDeviceSeen line at the bottom: the modules themselves must not
+    // count as an "external device" (that would enable SimpBMS summary TX).
+    // -----------------------------------------------------------------------
+    if (settings.cmuType == CMU_VW && processVwFrame(msg)) return;
 
     // BMW i3 cell voltage frames
     if (id >= BMW_I3_CELL_BASE && id <= (BMW_I3_CELL_BASE + BMW_I3_MAX_MODS - 1)) {
@@ -432,7 +451,109 @@ void CANManager::processRxFrame(const twai_message_t &msg)
     // Any frame outside the BMW CSC range confirms an external device is present
     if (id < 0x080 || id > 0x1FF) externalDeviceSeen = true;
 
-    wifiLogCAN(id, (uint8_t *)msg.data, dlc);
+    // Pass the real frame format so SavvyCAN/GVRET shows extended IDs as extended
+    wifiLogCAN(id, (uint8_t *)msg.data, dlc, msg.extd);
+}
+
+// ---------------------------------------------------------------------------
+// processVwFrame - VW CMU (MEB / MQB) RX decode. Called only in CMU_VW mode.
+// Protocol notes and citations: bms_config.h and VWProtocol.h.
+//
+// Each path is gated on ID range AND frame format. The reference used FlexCAN,
+// where the extended flag rides in the ID bits; TWAI reports it in msg.extd:
+//   cells          STANDARD 0x1B0-0x1EE
+//   temperatures   EXTENDED 0x1A555401-0x1A55543F (type 1)
+//                           0x1A5555F0-0x1A5555FE (type 2, MEB)
+//   balance status EXTENDED 0x16A95471-0x16A9547F (MEB)
+// Returns true for every frame in those ranges (even if rejected by a guard)
+// so processRxFrame() returns before the externalDeviceSeen line.
+//
+// Presence follows cell-frame freshness only (lastSeenMs is set when cells
+// are committed): temperature-only traffic never marks a module alive with
+// 0 V cells, which would trip a pack undervoltage.
+// ---------------------------------------------------------------------------
+static void applyVwTemps(VwSlaveData &d, const VwTempResult &r)
+{
+    for (int t = 0; t < VW_TEMPS_PER_MOD; t++)
+        if (r.state[t] != VW_T_UNCHANGED) d.temp[t] = r.t[t];
+    if (r.hasBalstat) d.balstat = r.balstat;
+}
+
+bool CANManager::processVwFrame(const twai_message_t &msg)
+{
+    uint32_t       id  = msg.identifier;
+    uint8_t        dlc = msg.data_length_code;
+    const uint8_t *buf = msg.data;
+
+    if (!msg.extd) {
+        // ---- Cell voltages: the ID gives module AND sub-frame ----
+        int mod, sub;
+        if (!vwCellIdToModule(id, mod, sub)) return false;
+        wifiLogCAN(id, (uint8_t *)buf, dlc, false);
+        vwLastReplySeenMs = millis();   // a module is on the bus (poll backoff)
+        if (mod < 1 || mod > VW_MAX_MODS) return true;
+        if (!vwCellFrameValid(sub, buf, dlc)) return true;   // initialising / spoof module
+
+        // Reference skips cell decode entirely while balancing
+        // (BMSModuleManager.cpp:432) - bleed current skews the readings.
+        // Deviation: the reference never drops a module, but ours time out
+        // after VW_TIMEOUT_MS, so a module that has already reported keeps
+        // its presence alive through the ~25 s bleed window.
+        if (vwBalancing) {
+            if (vwdata[mod].lastSeenMs != 0) vwdata[mod].lastSeenMs = millis();
+            return true;
+        }
+
+        uint16_t mv[4];
+        int n = vwDecodeCells(sub, buf, mv);
+        for (int k = 0; k < n; k++)
+            vwAcc[mod].cells[sub * 4 + k] = mv[k] * 0.001f;
+        vwAcc[mod].framesRx |= (uint8_t)(1 << sub);
+        if (sub == 3) vwdata[mod].hasCell13 = true;
+
+        // Commit once sub-frames 0-2 (cells 1-12) are in. Cell 13 (sub-frame
+        // 3) is carried along when present, not waited for: 12-cell modules
+        // may never send it. (Reference writes cells as they arrive.)
+        if ((vwAcc[mod].framesRx & 0x07) == 0x07) {
+            memcpy(vwdata[mod].cellV, vwAcc[mod].cells, sizeof(vwAcc[mod].cells));
+            vwdata[mod].fresh      = true;
+            vwdata[mod].lastSeenMs = millis();
+            vwAcc[mod].framesRx    = 0;
+        }
+        return true;
+    }
+
+    // ---- Type 1 temperatures (VWBMSV2.ino:2864-2871) ----
+    if (id >= VW_TEMP1_ID_MIN && id <= VW_TEMP1_ID_MAX) {
+        wifiLogCAN(id, (uint8_t *)buf, dlc, true);
+        vwLastReplySeenMs = millis();
+        int mod = vwTemp1Module(id);
+        VwTempResult r;
+        if (mod && vwDecodeTemp1(buf, dlc, r)) applyVwTemps(vwdata[mod], r);
+        return true;
+    }
+
+    // ---- Type 2 (MEB) temperatures (VWBMSV2.ino:2873-2880) ----
+    if (id >= VW_TEMP2_ID_MIN && id <= VW_TEMP2_ID_MAX) {
+        wifiLogCAN(id, (uint8_t *)buf, dlc, true);
+        vwLastReplySeenMs = millis();
+        int mod = vwTemp2Module(id);
+        VwTempResult r;
+        if (mod && vwDecodeTemp2(buf, dlc, r)) applyVwTemps(vwdata[mod], r);
+        return true;
+    }
+
+    // ---- MEB balance status (VWBMSV2.ino:2855-2862) ----
+    if (id >= VW_BALSTAT_ID_MIN && id <= VW_BALSTAT_ID_MAX) {
+        wifiLogCAN(id, (uint8_t *)buf, dlc, true);
+        vwLastReplySeenMs = millis();
+        int mod = vwBalstatModule(id);
+        uint32_t bs;
+        if (mod && vwDecodeBalstat(buf, dlc, bs)) vwdata[mod].balstat = bs;
+        return true;
+    }
+
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -465,6 +586,14 @@ bool CANManager::getPhevSlaveData(int slot, PhevSlaveData &out)
     if (slot < 1 || slot > BMW_PHEV_MAX_MODS) return false;
     out = phevdata[slot];
     phevdata[slot].fresh = false;
+    return out.lastSeenMs > 0;
+}
+
+bool CANManager::getVwSlaveData(int addr, VwSlaveData &out)
+{
+    if (addr < 1 || addr > VW_MAX_MODS) return false;
+    out = vwdata[addr];
+    vwdata[addr].fresh = false;
     return out.lastSeenMs > 0;
 }
 

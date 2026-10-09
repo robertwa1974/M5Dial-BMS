@@ -4,6 +4,8 @@
 // New in v7:
 //   - 5 CMU types: Tesla UART / BMW i3 / BMW i3 Bus Pack / BMW Mini-E / BMW PHEV
 //   - BMW PHEV SP06/SP41/SP44 support (polled 50ms, 16 cells, 4 temps)
+//   - VW CMU (MEB / MQB) support (0x0BA poll, 12/13 cells, ext-ID temps,
+//     balancing) - ported from Tom de Bree's VWBMSV2
 //   - GVRET/SavvyCAN TCP server on port 23
 //   - Web installer via GitHub Pages CI/CD
 //   - M5DialBMS branding, WiFi SSID M5DialBMS/M5DialBMS
@@ -120,6 +122,7 @@ static const char *cmuTypeName()
         case CMU_BMW_I3_BUS: return "BMW i3 Bus";
         case CMU_BMW_MINIE:  return "BMW Mini-E";
         case CMU_BMW_PHEV:   return "BMW PHEV";
+        case CMU_VW:         return "VW CMU (MEB/MQB)";
         default:             return "Unknown";
     }
 }
@@ -224,6 +227,11 @@ void setup()
         Logger::console("BMW PHEV CAN mode: skipping UART enumeration");
         display.showStartup("PHEV CAN mode...");
         // Module discovery via 0x080 polls — starts automatically once CAN begins
+    } else if (settings.cmuType == CMU_VW) {
+        Logger::console("VW CMU CAN mode: skipping UART enumeration");
+        display.showStartup("VW CAN mode...");
+        // Modules appear once CAN RX task sees their cell frames (0x0BA poll
+        // starts automatically once CAN begins)
     } else {
         Logger::console("%s CAN mode: skipping UART enumeration", cmuTypeName());
         display.showStartup("BMW CAN mode...");
@@ -288,6 +296,9 @@ void loop()
                 break;
             case CMU_BMW_PHEV:
                 bms.getAllVoltTempFromPHEV();
+                break;
+            case CMU_VW:
+                bms.getAllVoltTempFromVW();
                 break;
             default:  // CMU_BMW_I3, CMU_BMW_I3_BUS, CMU_BMW_MINIE
                 bms.getAllVoltTempFromCAN();
