@@ -141,7 +141,12 @@ static void createStyles()
 // ---------------------------------------------------------------------------
 // begin()
 // ---------------------------------------------------------------------------
-Display::Display() : currentPage(0), dirty(true), initialized(false), lastLvglTick(0), showSecondHalf(false) {}
+Display::Display() : currentPage(0), dirty(true), initialized(false), lastLvglTick(0), cellPage(0) {}
+
+// Module pages with 9-15 cells use the 6-cell layout and page through the
+// cells 6 at a time: 12 cells (BMW i3) = 1-6 / 7-12, 13 cells (VW CMU
+// modules 1-9) = 1-6 / 7-12 / 13. 16 cells (PHEV) keep the 4x4 grid.
+static bool isPagedCellLayout(int activeCells) { return activeCells > 8 && activeCells < 16; }
 
 bool Display::begin()
 {
@@ -194,21 +199,23 @@ void Display::tick()
     }
 
     // Alternate cells 1-6 / 7-12 every 1000ms on module pages if module has > 6 cells
+    // (and 1-6 / 7-12 / 13 for 13-cell VW CMU modules)
     static uint32_t lastToggleTime = 0;
     if (currentPage >= 1 && currentPage <= MAX_MODULE_ADDR && bms.getModule(currentPage).isExisting()) {
         int activeCells = bms.getModuleCells(currentPage);
         if (activeCells > 6) {
             if (now - lastToggleTime >= 1000) {
                 lastToggleTime = now;
-                showSecondHalf = !showSecondHalf;
+                int pages = (activeCells + 5) / 6;
+                cellPage = (uint8_t)((cellPage + 1) % pages);
                 dirty = true;
             }
         } else {
-            showSecondHalf = false;
+            cellPage = 0;
             lastToggleTime = now;
         }
     } else {
-        showSecondHalf = false;
+        cellPage = 0;
         lastToggleTime = now;
     }
 
@@ -337,6 +344,7 @@ void Display::buildPackPage()
 //   <= 6 cells (Tesla):         2 columns × 3 rows, 40px row pitch
 //   <= 8 cells (PHEV SP44):     2 columns × 4 rows, 33px row pitch
 //   <= 12 cells (BMW i3):       2 columns × 6 rows, 26px row pitch
+//   13 cells (VW CMU 1-9):      6-cell layout, paged 1-6 / 7-12 / 13
 //   <= 16 cells (PHEV SP06/41): 4 columns × 4 rows, 33px row pitch, no bars
 // Cells beyond resolved numCells are hidden.
 // ---------------------------------------------------------------------------
@@ -364,7 +372,7 @@ void Display::buildModulePage(int addr)
     int mode;
     if      (activeCells <= 6)  mode = 0;
     else if (activeCells <= 8)  mode = 1;
-    else if (activeCells <= 12) mode = 0; // force 6-cell layout to alternate 1-6 / 7-12
+    else if (activeCells < 16)  mode = 0; // force 6-cell layout to alternate 1-6 / 7-12 (/ 13)
     else                        mode = 3;
 
     // Column x positions per mode
@@ -552,6 +560,7 @@ void Display::updatePackPage()
 
 // ---------------------------------------------------------------------------
 // updateModulePage  v6 — larger voltage labels, 12-cell aware
+// v7: 13-cell aware (VW CMU) - paged view generalised to 6 cells per page
 // ---------------------------------------------------------------------------
 void Display::updateModulePage(int addr)
 {
@@ -562,9 +571,18 @@ void Display::updateModulePage(int addr)
 
     int activeCells = bms.getModuleCells(addr);
 
+    bool paged = isPagedCellLayout(activeCells);
+    int  pages = (activeCells + 5) / 6;
+    if (cellPage >= pages) cellPage = 0;   // e.g. moved from a 13-cell to a 12-cell module
+    int  first = cellPage * 6;                       // 0-based first cell on this page
+    int  last  = (first + 6 < activeCells) ? first + 6 : activeCells;   // exclusive
+
     char buf[48];
-    if (activeCells == 12) {
-        snprintf(buf, sizeof(buf), "Mod#%d (%s) %.2fV", addr, showSecondHalf ? "7-12" : "1-6", mod.getModuleVoltage());
+    if (paged) {
+        char range[8];
+        if (last - first > 1) snprintf(range, sizeof(range), "%d-%d", first + 1, last);
+        else                  snprintf(range, sizeof(range), "%d", first + 1);
+        snprintf(buf, sizeof(buf), "Mod#%d (%s) %.2fV", addr, range, mod.getModuleVoltage());
     } else {
         snprintf(buf, sizeof(buf), "Mod#%d  %.2fV", addr, mod.getModuleVoltage());
     }
@@ -574,12 +592,8 @@ void Display::updateModulePage(int addr)
         bool shouldHide = false;
         if (i >= activeCells) {
             shouldHide = true;
-        } else if (activeCells == 12) {
-            if (showSecondHalf) {
-                if (i < 6) shouldHide = true;
-            } else {
-                if (i >= 6) shouldHide = true;
-            }
+        } else if (paged) {
+            if (i < first || i >= last) shouldHide = true;
         }
 
         if (shouldHide) {
@@ -654,7 +668,7 @@ void Display::updateSettingsPage()
 {
     char buf[320];
     static const char *cmuNames[] = {
-        "Tesla UART", "BMW i3 CAN", "BMW i3 Bus", "BMW Mini-E", "BMW PHEV"
+        "Tesla UART", "BMW i3 CAN", "BMW i3 Bus", "BMW Mini-E", "BMW PHEV", "VW CMU"
     };
     snprintf(buf, sizeof(buf),
         "M5DialBMS v7\n"
@@ -666,7 +680,7 @@ void Display::updateSettingsPage()
         "ChgHB: 0x%03X  %s\n"
         "AutoBal: %s\n"
         "Mods: %d / %d max",
-        cmuNames[settings.cmuType <= 4 ? settings.cmuType : 0],
+        cmuNames[settings.cmuType <= CMU_TYPE_MAX ? settings.cmuType : 0],
         settings.numCells, settings.numSeries, settings.numParallel,
         settings.OverVSetpoint, settings.UnderVSetpoint,
         settings.balanceVoltage, settings.balanceHyst,

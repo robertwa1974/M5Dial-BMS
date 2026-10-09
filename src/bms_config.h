@@ -115,7 +115,9 @@ enum CmuType : uint8_t {
     CMU_BMW_I3_BUS   = 2,   // BMW i3 bus-pack variant (0x080 TX keepalive, 0x100-0x17F RX)
     CMU_BMW_MINIE    = 3,   // BMW Mini-E CSC (0x080 TX, 0x0A0-0x17F RX)
     CMU_BMW_PHEV     = 4,   // BMW PHEV SP06/SP41/SP44 — polled 50ms, 16 cells, 4 temps
+    CMU_VW           = 5,   // VW CMU (MEB/MQB) — 0x0BA poll, 0x1B0-0x1EE cells, ext-ID temps/balance
 };
+#define CMU_TYPE_MAX            CMU_VW  // highest valid CmuType (range checks in UI/console)
 
 // ---------------------------------------------------------------------------
 // CAN-based balance inhibit
@@ -231,6 +233,72 @@ extern const uint8_t BMW_PHEV_FINAL_XOR[12];
 // BMWI3BUS / Mini-E command interval (shared keepalive burst period)
 // ---------------------------------------------------------------------------
 #define BMW_CSC_CMD_INTERVAL_MS  24    // keepalive/command burst period (ms)
+
+// ---------------------------------------------------------------------------
+// VW CMU (MEB / MQB e-Golf, GTE) CAN protocol
+// Ported from Tom de Bree's VWBMSV2:
+//   https://github.com/Tom-evnut/VW-bms  commit 4a6a5b9 (2024-03-29)
+// Citations below are "file:line" inside VWBMSV2/ at that commit.
+// Frame decoders live in VWProtocol.h (pure functions, host-testable).
+//
+// Bus: 500 kbit/s (VWBMSV2.ino:314 Can0.begin(500000)) - same as TWAI config.
+//
+// Poll (VWBMSV2.ino:190 controlid, :3104-3129 sendcommand(), called once per
+// 500 ms main-loop block :758-828):
+//   two STANDARD frames on 0x0BA, 1 ms apart. Broadcast, not per module:
+//     00 00 00 00 00 00 00 00
+//     45 01 28 00 00 00 00 30
+//   VWBMSV2.ino:191 declares moduleidstart = 0x1CC but never uses it. 0x1CC
+//   is module 8 sub-frame 0, NOT a base address.
+//
+// Cell voltages - STANDARD IDs 0x1B0-0x1EE (BMSModuleManager.cpp:430-718).
+//   The CAN ID encodes BOTH module and sub-frame; never use arrival order:
+//     modules 1-9  : 0x1B0 + 4*(m-1)  + sub, sub 0..3  -> up to 13 cells
+//     modules 10-16: 0x1D4 + 4*(m-10) + sub, sub 0..2  -> up to 12 cells
+//                    (the reference's "one extender increment" block)
+//   Encoding (BMSModule.cpp:99-240): 4 cells per sub-frame, 12-bit
+//   nibble-packed, mV = raw + 1000. Sub-frame 3 carries only cell 13.
+//   Guards (BMSModuleManager.cpp:687-702): sub 0-1 dropped if buf[2], buf[5]
+//   or buf[7] == 0xFF; other subs dropped if buf[2] == 0xFF (module
+//   initialising, or a "spoof module").
+//   The reference skips cell decode while balancing (BMSModuleManager.cpp:432).
+//   Here cells are always decoded (display, CAN TX); balance selection and
+//   overvoltage checks use un-bled readings instead - see VWProtocol.h.
+//
+// Temperatures - EXTENDED IDs (VWBMSV2.ino:2864-2880,
+// BMSModuleManager.cpp:388-428, BMSModule.cpp:51-97):
+//   type 1:       0x1A555401-0x1A55543F
+//   type 2 (MEB): 0x1A5555F0-0x1A5555FE
+// Balance status (MEB) - EXTENDED 0x16A95471-0x16A9547F (VWBMSV2.ino:2855-2862,
+//   BMSModuleManager.cpp:353-366, BMSModule.cpp:46-49)
+// Balance command - EXTENDED, two frames per module 1-12
+//   (BMSModuleManager.cpp:50-240, IDs in VW_BAL_CMD_ID_A/B in CANManager.cpp)
+//
+// Which of these blocks MEB modules actually use (and whether they need the
+// 0x0BA poll at all) is still to be confirmed on the bench - see README.
+// ---------------------------------------------------------------------------
+#define VW_POLL_ID              0x0BA   // TX: broadcast poll (standard ID)
+#define VW_CELL_ID_MIN          0x1B0   // RX: first cell frame (module 1, sub 0)
+#define VW_CELL_ID_MAX          0x1EE   // RX: last cell frame (module 16, sub 2)
+#define VW_TEMP1_ID_MIN         0x1A555401UL  // RX ext: type 1 temperatures
+#define VW_TEMP1_ID_MAX         0x1A55543FUL
+#define VW_TEMP2_ID_MIN         0x1A5555F0UL  // RX ext: type 2 (MEB) temperatures
+#define VW_TEMP2_ID_MAX         0x1A5555FEUL
+#define VW_BALSTAT_ID_MIN       0x16A95471UL  // RX ext: MEB balance status
+#define VW_BALSTAT_ID_MAX       0x16A9547FUL
+#define VW_MAX_MODS             16      // modules addressable by the cell-ID table
+#define VW_MAX_BAL_MODS         12      // modules with a balance-command ID pair
+#define VW_STD_MODS             9       // modules 1-9 have sub-frame 3 (cell 13)
+#define VW_CELLS_PER_MOD        13      // max cells per module (modules 1-9)
+#define VW_TEMPS_PER_MOD        3       // type 1 carries T0..T2
+#define VW_POLL_INTERVAL_MS     500     // reference main-loop period (VWBMSV2.ino:758)
+#define VW_BAL_TICK_MS          500     // balance state-machine tick (same loop)
+#define VW_TIMEOUT_MS           3000    // module offline after this long without cell frames
+#define VW_TEMP_INVALID         -100.0f // sensor absent (below IgnoreTempThresh default -70)
+// Balancing vs. protection (deviation from the reference - see VWProtocol.h)
+#define VW_SETTLE_MS            1000    // after a stop, readings count as un-bled after this
+#define VW_SNAP_MAX_AGE_MS      3000    // un-bled snapshot trusted for OV checks for this long
+#define VW_BLEED_OV_MARGIN      0.05f   // V: bleeding cells read low by up to this (bench-check)
 
 // ---------------------------------------------------------------------------
 // EEPROM / NVS settings

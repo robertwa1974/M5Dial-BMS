@@ -7,7 +7,8 @@
 
 // Free function - call from CANManager::sendFrame() to populate the rolling
 // CAN log buffer served at /api/can.  Safe to call even when WiFi is off.
-void wifiLogCAN(uint32_t id, uint8_t *data, uint8_t len);
+// extd = true marks a 29-bit extended ID (forwarded to SavvyCAN/GVRET with bit 31 set)
+void wifiLogCAN(uint32_t id, uint8_t *data, uint8_t len, bool extd = false);
 
 class WiFiManager {
 public:

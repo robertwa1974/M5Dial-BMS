@@ -23,6 +23,8 @@ public:
     void wakeBoards();
     void getAllVoltTemp();
     void balanceCells();
+    // VW CMU: send stop frames if a bleed is active and reset the duty cycle
+    void stopBalancingVW();
 
     // Configuration
     void readSetpoints();
@@ -46,6 +48,9 @@ public:
     float getAvgCellVolt();
     float getLowCellVolt();
     float getHighCellVolt();
+    // Pack high cell for overvoltage checks (0x35A alarm, 0x373 max cell).
+    // Same as getHighCellVolt() except in VW CMU mode while cells bleed.
+    float getProtectionHighCellVolt();
     float getLowVoltage();
     float getHighVoltage();
     int   getNumModules();
@@ -56,6 +61,8 @@ public:
     void  getAllVoltTempFromCAN();
     // BMW PHEV CAN-sourced data path
     void  getAllVoltTempFromPHEV();
+    // VW CMU (MEB / MQB) CAN-sourced data path
+    void  getAllVoltTempFromVW();
 
     // Per-module accessor
     BMSModule& getModule(int addr);
@@ -79,4 +86,17 @@ private:
     bool      isFaulted;
     bool      balanceInhibit;   // true = drive mode, skip balancing
     bool      autoBalance;      // true = balance automatically each cycle
+    // VW CMU: sub-frames each module has ever sent (cell count, see VWProtocol.h)
+    uint8_t   vwSubSeen[MAX_MODULE_ADDR + 1];
+    // VW CMU balancing state (reference balcnt duty cycle)
+    uint8_t   vwBalCnt;
+    bool      vwBalCmdSent;     // balance frames sent since the last stop
+    bool      vwBleeding;       // a non-zero mask is active (cells read low)
+    uint16_t  vwBleedMask[VW_MAX_MODS + 1];   // cells currently bleeding
+    uint32_t  vwLastStopMs;     // when stop frames were last requested
+    // Un-bled snapshot: pack high taken while no cell was bleeding and
+    // VW_SETTLE_MS after the last stop (see VWProtocol.h)
+    float     vwSnapHigh;
+    uint32_t  vwSnapMs;         // 0 = none yet
+    void      balanceCellsVW();
 };
