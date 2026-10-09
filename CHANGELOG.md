@@ -4,7 +4,20 @@
 
 ## v7-beta8 — October 2026 (unreleased)
 
+### New Features
+- **VW CMU (MEB / MQB) support — `CMUTYPE=5`** — protocol ported from Tom de Bree's VWBMSV2 (Tom-evnut/VW-bms @ 4a6a5b9). **Experimental — not yet confirmed on MEB hardware.**
+  - 0x0BA broadcast poll every 500 ms, with the same 3 s grace window + 1-in-N backoff as the i3 Bus keepalive so an empty bus does not go bus-off
+  - Cell voltages on standard IDs 0x1B0–0x1EE (module and sub-frame taken from the CAN ID), 12-bit packed, init/spoof-module guards
+  - Up to 16 modules; 8, 12 or 13 cells each, from the sub-frames a module actually sends (per-module override 8/12/13 wins). 13-cell module pages alternate 1–6 / 7–12 / 13
+  - Type 1 and type 2 (MEB) temperatures and MEB balance status on extended IDs; real pack min/max temperatures on 0x373
+  - Balancing via extended-ID commands for modules 1–12 with the reference duty cycle (~5 s measure / ~25 s bleed), gated on `BALVOLT` + `BALHYST`, auto-balance, inhibit and fault state; stop frames on every exit path
+  - Cells stay decoded while bleeding. Balance selection uses an un-bled snapshot from the measuring window (max 3 s old); the overvoltage value on 0x35A/0x373 adds a 0.05 V margin to bled readings, and a bleed stops early to re-measure near OVERV. Bleeding cells are left out of the 0x373 minimum
+  - Balance frames are sent from the CAN task, never blocking `loop()`
+  - VW frames never count as an "external device", so SimpBMS summary TX stays off on a module-only bus
+- **Host unit test** for the VW decoders (`test/vw_decode_test.cpp`), run in CI (`.github/workflows/test.yml`) against tables generated from the reference source
+
 ### Bug Fixes
+- **SavvyCAN showed extended IDs as standard** — `wifiLogCAN()` always pushed frames to GVRET with the extended flag cleared. It now forwards the real frame format.
 - **BMW PHEV cells 7–16 showed 0.000 V** — `BMSModule::setNumCells()` rejected anything above 12, so PHEV modules stayed at the default 6 cells and `getCellVoltage()` returned 0 for cells 7–16 on the display and web UI. Those cells were also left out of the module/pack low/high/average cell calculations (0x35A alarms, 0x373 min/max). The limit is now 16, the size of `cellVolt[]`.
 - **BMW PHEV temperatures T3/T4 dropped** — `BMSModule` stored only two temperatures; it now stores four. Display, averages and pack low/high still use T1/T2 only.
 
