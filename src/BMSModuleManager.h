@@ -63,6 +63,8 @@ public:
     void  getAllVoltTempFromPHEV();
     // VW CMU (MEB / MQB) CAN-sourced data path
     void  getAllVoltTempFromVW();
+    // Chrysler Pacifica BPCM CAN-sourced data path
+    void  getAllVoltTempFromPacifica();
 
     // Per-module accessor
     BMSModule& getModule(int addr);

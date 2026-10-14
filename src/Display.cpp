@@ -668,7 +668,7 @@ void Display::updateSettingsPage()
 {
     char buf[320];
     static const char *cmuNames[] = {
-        "Tesla UART", "BMW i3 CAN", "BMW i3 Bus", "BMW Mini-E", "BMW PHEV", "VW CMU"
+        "Tesla UART", "BMW i3 CAN", "BMW i3 Bus", "BMW Mini-E", "BMW PHEV", "VW CMU", "Pacifica"
     };
     snprintf(buf, sizeof(buf),
         "M5DialBMS v7\n"

@@ -16,6 +16,11 @@
 //     BMWI3BUS-style empty-bus grace window + 1-in-N backoff
 //   - sendVwBalance() / sendVwBalanceStop(): extended-ID balance commands,
 //     sent from the VW task; loop() hands requests over through vwBalQueue
+// v7 Chrysler Pacifica BPCM:
+//   - processPacFrame(): cells 0x487-0x49E, temps 0x4A0/0x4A1, coolant 0x307,
+//     status 0x150, decoders in PacificaProtocol.h. RX only - the BPCM is
+//     woken by a GPIO pulse (main.cpp), not by CAN.
+//   - New accessors: getPacSlaveData(), getPacPackData()
 // =============================================================================
 #include "CANManager.h"
 #include "bms_config.h"
@@ -49,6 +54,13 @@ CANManager::CANManager()
     for (int m = 0; m <= VW_MAX_MODS; m++)
         for (int t = 0; t < VW_TEMPS_PER_MOD; t++)
             vwdata[m].temp[t] = VW_TEMP_INVALID;   // until a sensor reports
+    memset(pacdata, 0, sizeof(pacdata));
+    memset(&pacPack, 0, sizeof(pacPack));
+    for (int m = 0; m <= PAC_MAX_MODS; m++)
+        for (int t = 0; t < PAC_TEMPS_PER_MOD; t++)
+            pacdata[m].temp[t] = PAC_TEMP_INVALID;
+    pacPack.coolantOutlet = PAC_TEMP_INVALID;
+    pacPack.coolantInlet  = PAC_TEMP_INVALID;
     phevCrc8.begin();
 }
 
@@ -291,6 +303,13 @@ void CANManager::processRxFrame(const twai_message_t &msg)
     // count as an "external device" (that would enable SimpBMS summary TX).
     // -----------------------------------------------------------------------
     if (settings.cmuType == CMU_VW && processVwFrame(msg)) return;
+
+    // Pacifica BPCM - gated on CMU_PACIFICA (0x150 and 0x307 are ordinary
+    // IDs that other setups may use). Known BPCM frames return here so they
+    // don't count as an external device. The BPCM sends ~44 IDs and only
+    // these are decoded: the rest fall through and DO set externalDeviceSeen,
+    // which enables SimpBMS TX onto the BPCM's bus (check on the bench).
+    if (settings.cmuType == CMU_PACIFICA && processPacFrame(msg)) return;
 
     // BMW i3 cell voltage frames
     if (id >= BMW_I3_CELL_BASE && id <= (BMW_I3_CELL_BASE + BMW_I3_MAX_MODS - 1)) {
@@ -605,6 +624,79 @@ bool CANManager::processVwFrame(const twai_message_t &msg)
 }
 
 // ---------------------------------------------------------------------------
+// processPacFrame - Chrysler Pacifica BPCM RX decode. Called only in
+// CMU_PACIFICA mode. Frame map and provenance: PacificaProtocol.h.
+//
+// Presence follows cell frames only: a module is marked seen once all four
+// sub-frames (16 cells) have arrived, so temperature-only traffic never shows
+// a module with 0 V cells (which would trip a pack undervoltage).
+// ---------------------------------------------------------------------------
+bool CANManager::processPacFrame(const twai_message_t &msg)
+{
+    if (msg.extd) return false;
+    uint32_t       id  = msg.identifier;
+    uint8_t        dlc = msg.data_length_code;
+    const uint8_t *buf = msg.data;
+
+    int mod, sub;
+    if (pacCellIdToModule(id, mod, sub)) {
+        wifiLogCAN(id, (uint8_t *)buf, dlc, false);
+        pacPack.lastFrameMs = millis();
+        uint16_t mv[4];
+        if (pacDecodeCells(buf, dlc, mv) != 4) return true;
+        for (int k = 0; k < 4; k++)
+            pacdata[mod].cellV[sub * 4 + k] = mv[k] * 0.001f;
+        pacdata[mod].subSeen |= (uint8_t)(1 << sub);
+        if (pacdata[mod].subSeen == 0x0F) {
+            pacdata[mod].fresh      = true;
+            pacdata[mod].lastSeenMs = millis();
+            pacdata[mod].subSeen    = 0;
+        }
+        return true;
+    }
+
+    int first = pacTempIdFirstModule(id);
+    if (first) {
+        wifiLogCAN(id, (uint8_t *)buf, dlc, false);
+        pacPack.lastFrameMs = millis();
+        float t[6];
+        if (pacDecodeTemps(buf, dlc, t)) {
+            for (int i = 0; i < 3; i++)
+                for (int j = 0; j < PAC_TEMPS_PER_MOD; j++)
+                    pacdata[first + i].temp[j] = t[2 * i + j];
+        }
+        return true;
+    }
+
+    if (id == PAC_COOLANT_ID) {
+        wifiLogCAN(id, (uint8_t *)buf, dlc, false);
+        pacPack.lastFrameMs = millis();
+        pacDecodeCoolant(buf, dlc, pacPack.coolantOutlet, pacPack.coolantInlet);
+        return true;
+    }
+
+    if (id == PAC_STATUS_ID) {
+        wifiLogCAN(id, (uint8_t *)buf, dlc, false);
+        pacPack.lastFrameMs = millis();
+        PacStatus s;
+        if (pacDecodeStatus(buf, dlc, s)) {
+            bool hadStatus = pacPack.statusSeenMs != 0;
+            if (!hadStatus || s.hvilClosed != pacPack.status.hvilClosed ||
+                s.hvilExtClosed != pacPack.status.hvilExtClosed) {
+                Logger::info("Pacifica: HVIL %s, external loop %s",
+                             s.hvilClosed ? "closed" : "OPEN",
+                             s.hvilExtClosed ? "closed" : "OPEN");
+            }
+            pacPack.status       = s;
+            pacPack.statusSeenMs = millis();
+        }
+        return true;
+    }
+
+    return false;
+}
+
+// ---------------------------------------------------------------------------
 // Accessors
 // ---------------------------------------------------------------------------
 bool CANManager::getChargerActive()
@@ -644,6 +736,16 @@ bool CANManager::getVwSlaveData(int addr, VwSlaveData &out)
     vwdata[addr].fresh = false;
     return out.lastSeenMs > 0;
 }
+
+bool CANManager::getPacSlaveData(int addr, PacSlaveData &out)
+{
+    if (addr < 1 || addr > PAC_MAX_MODS) return false;
+    out = pacdata[addr];
+    pacdata[addr].fresh = false;
+    return out.lastSeenMs > 0;
+}
+
+PacPackData CANManager::getPacPackData() const { return pacPack; }
 
 // ---------------------------------------------------------------------------
 // getPhevChecksum

@@ -65,6 +65,27 @@ ESP32-S3 battery management system display/controller for Tesla Model S/X batter
   - whether the type 1 or type 2 temperature frames (or both) apply to MEB
   - termination and 12 V / 5 V supply requirements of the module connector
 
+### Chrysler Pacifica PHEV BPCM (CMUTYPE=6)
+- The pack's own BMS (BPCM, LG) on CAN 500 kbit/s; frame map from Slyd's bench DBC
+  ([diyelectriccar.com thread](https://www.diyelectriccar.com/threads/tesla-motor-chrysler-pacifica-bpcm-in-smart-fortwo-ed.211649/), 2023 pack)
+- **RX only**: the Dial sends nothing to the BPCM. It balances internally (reported, not yet verified)
+- Cell voltages: `0x487`–`0x49E`, `0x487 + 4*(module-1) + sub`, 4 cells per frame, 16-bit big-endian, 1 mV/bit
+- 6 modules × 16 cells, 2 temperatures per module on `0x4A0` (modules 1–3) / `0x4A1` (4–6), byte − 40 °C
+- Coolant outlet/inlet on `0x307`; HVIL status on `0x150` (logged when it changes)
+- **Wake**: BPCM connector pin 9 needs a 12 V pulse (one pulse wakes, two pulses sleep).
+  GPIO13 (Grove A yellow, free in CAN modes) drives an **external** high-side switch for it:
+  one 200 ms pulse after CAN starts, and again on the console `W` command. Never repeated
+  automatically, so a missed wake doesn't turn into a sleep
+- BPCM low-voltage connector (black, 12-pin, per Slyd): 1 = +12 V, 2 = GND, 3 = CAN-H,
+  4 = CAN-L, 5–6 = HVIL loop (jumper), 9 = wake
+- **Unconfirmed** — still to be checked on the bench:
+  - the whole map on packs other than 2023 (2017–2018 packs are a different part family)
+  - wake pulse length and polarity, and whether the BPCM stays awake without keep-alive frames
+  - whether it really balances standalone
+  - the BPCM sends ~44 IDs; the undecoded ones count as an external device and enable
+    the SimpBMS summary TX onto the BPCM's bus
+  - the 11-bit `0x150` field Slyd labels SOC (×0.192, 0–393: looks more like pack voltage)
+
 ## CAN Inhibit
 
 When `canInhibitEnabled = 1`, balancing is paused if no frame matching `chargerHeartbeatID` is received for 5 seconds (default ID `0x305` = CAB300 current sensor). GPIO38 inhibit always remains active in parallel.

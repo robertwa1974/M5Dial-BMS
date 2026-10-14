@@ -771,6 +771,11 @@ int BMSModuleManager::getModuleCells(int addr)
         modules[addr].setNumCells(BMW_PHEV_CELLS_PER_MOD);
         return BMW_PHEV_CELLS_PER_MOD;
     }
+    // Pacifica BPCM: always 16 cells per module (6 x 16s)
+    if (settings.cmuType == CMU_PACIFICA) {
+        modules[addr].setNumCells(PAC_CELLS_PER_MOD);
+        return PAC_CELLS_PER_MOD;
+    }
     // VW CMU: modules 1-9 can carry 13 cells (sub-frame 3), 10-16 at most 12
     // (reference cell-ID table, BMSModuleManager.cpp:430-718). Default follows
     // what the module actually sends (vwCellsFromSubFrames): 13 once
@@ -969,4 +974,65 @@ void BMSModuleManager::getAllVoltTempFromVW()
         vwSnapMs   = millis();
         if (vwSnapMs == 0) vwSnapMs = 1;   // 0 means "none"
     }
+}
+
+// ---------------------------------------------------------------------------
+// getAllVoltTempFromPacifica - populate BMSModule objects from Pacifica BPCM
+// CAN data. Called instead of UART getAllVoltTemp() when
+// cmuType == CMU_PACIFICA. Reads PacSlaveData staging buffers populated by
+// CANManager's RX task. 6 modules x 16 cells, 2 temperatures each.
+//
+// Presence follows cell frames only (see CANManager::processPacFrame). The
+// BPCM balances internally: nothing is sent back, and no fault frame is
+// decoded yet (HVIL state is logged by the RX task).
+// ---------------------------------------------------------------------------
+void BMSModuleManager::getAllVoltTempFromPacifica()
+{
+    packVolt = 0.0f;
+    numFoundModules = 0;
+    // Pack temperature range for this cycle (0x373 min/max temp)
+    float loT = 200.0f;
+    float hiT = -100.0f;
+
+    for (int x = 1; x <= PAC_MAX_MODS; x++) {
+        PacSlaveData d;
+        if (!can.getPacSlaveData(x, d)) continue;   // no cell frames ever received
+
+        bool alive = (millis() - d.lastSeenMs) < (uint32_t)PAC_TIMEOUT_MS;
+        modules[x].setExists(alive);
+        if (!alive) continue;
+
+        numFoundModules++;
+        int n = getModuleCells(x);   // also sets the module's numCells
+
+        float modV = 0.0f;
+        for (int c = 0; c < n; c++) {
+            modules[x].setCellVoltage(c, d.cellV[c]);
+            if (d.cellV[c] > settings.IgnoreVolt && d.cellV[c] < 5.0f)
+                modV += d.cellV[c];
+        }
+        modules[x].setModuleVoltage(modV);
+
+        for (int t = 0; t < PAC_TEMPS_PER_MOD; t++) {
+            modules[x].setTemperature(t, d.temp[t]);
+            float tv = d.temp[t];
+            if (tv > settings.IgnoreTempThresh && tv > PAC_TEMP_INVALID + 0.5f) {
+                if (tv < loT) loT = tv;
+                if (tv > hiT) hiT = tv;
+            }
+        }
+
+        modules[x].setFaults(0);
+        modules[x].setAlerts(0);
+
+        packVolt += modV;
+    }
+
+    int np = (settings.numParallel > 0) ? settings.numParallel : BMS_NUM_PARALLEL;
+    if (np > 1) packVolt /= np;
+
+    // Current pack temperature range, so 0x373 carries real temperatures
+    // (same convention as getAllVoltTempFromVW()).
+    lowestPackTemp  = loT;
+    highestPackTemp = hiT;
 }

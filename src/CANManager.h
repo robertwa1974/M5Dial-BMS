@@ -21,6 +21,7 @@
 #include "bms_config.h"   // for PHEV_MAX_MODS, BMW_PHEV_MAX_MODS
 #include "CRC8.h"         // for PHEV poll command CRC
 #include "VWProtocol.h"   // VW CMU frame decoders (pure functions)
+#include "PacificaProtocol.h"  // Pacifica BPCM frame decoders (pure functions)
 
 // ---------------------------------------------------------------------------
 // BMW i3 / Mini-E / Bus Pack staging data
@@ -57,6 +58,27 @@ struct VwSlaveData {
     uint8_t  subSeen;                  // sub-frames ever received (bit n = sub-frame n)
     bool     fresh;
     uint32_t lastSeenMs;               // last guard-passing CELL frame (presence)
+};
+
+// ---------------------------------------------------------------------------
+// Chrysler Pacifica BPCM staging data
+// Index 0 unused; 1..PAC_MAX_MODS = module number from the cell-frame ID.
+// ---------------------------------------------------------------------------
+struct PacSlaveData {
+    float    cellV[PAC_CELLS_PER_MOD];
+    float    temp[PAC_TEMPS_PER_MOD];  // PAC_TEMP_INVALID until reported
+    uint8_t  subSeen;                  // sub-frames received since last presence update
+    bool     fresh;
+    uint32_t lastSeenMs;               // set when all 4 sub-frames (16 cells) have arrived
+};
+
+// Pack-level BPCM values (not per module)
+struct PacPackData {
+    float     coolantOutlet;           // PAC_TEMP_INVALID until 0x307 seen
+    float     coolantInlet;
+    PacStatus status;                  // 0x150 (valid once statusSeenMs != 0)
+    uint32_t  statusSeenMs;
+    uint32_t  lastFrameMs;             // any decoded BPCM frame
 };
 
 // ---------------------------------------------------------------------------
@@ -108,6 +130,10 @@ public:
     // modules: bit m = module m (1..12) gets mask[m]; absent modules get none.
     void requestVwBalance(uint16_t modules, const uint16_t *mask);
     void requestVwBalanceStop();
+
+    // Pacifica BPCM data (addr 1..PAC_MAX_MODS) and pack-level values
+    bool getPacSlaveData(int addr, PacSlaveData &out);
+    PacPackData getPacPackData() const;
 
 private:
     bool         running;
@@ -161,6 +187,12 @@ private:
 
     // VW RX - returns true if the frame was a VW frame (consumed)
     bool processVwFrame(const twai_message_t &msg);
+
+    // Pacifica BPCM staging (RX only - nothing is transmitted to the BPCM)
+    PacSlaveData pacdata[PAC_MAX_MODS + 1];
+    PacPackData  pacPack;
+    // Pacifica RX - returns true if the frame was a known BPCM frame (consumed)
+    bool processPacFrame(const twai_message_t &msg);
 
     // VW TX - 0x0BA poll pair, with empty-bus grace/backoff
     void sendVwPoll();

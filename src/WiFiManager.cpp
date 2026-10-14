@@ -464,7 +464,7 @@ function renderSettingsForm(){
   // We show all slots 1..maxModules that have an override set, plus allow setting any 1..20
   html+=`<div class="sf-group" style="grid-column:span 2">
   <h3>CMU Type &amp; Balance Inhibit (v7)</h3>
-  <div class=\"row\"><label>CMU Type (reboot)</label><select id=\"cmuType\"><option value=\"0\">Tesla UART</option><option value=\"1\">BMW i3 CAN</option><option value=\"2\">BMW i3 Bus Pack</option><option value=\"3\">BMW Mini-E</option><option value=\"4\">BMW PHEV SP06/SP41/SP44</option><option value=\"5\">VW CMU (MEB/MQB)</option></select></div>
+  <div class=\"row\"><label>CMU Type (reboot)</label><select id=\"cmuType\"><option value=\"0\">Tesla UART</option><option value=\"1\">BMW i3 CAN</option><option value=\"2\">BMW i3 Bus Pack</option><option value=\"3\">BMW Mini-E</option><option value=\"4\">BMW PHEV SP06/SP41/SP44</option><option value=\"5\">VW CMU (MEB/MQB)</option><option value=\"6\">Chrysler Pacifica BPCM</option></select></div>
   <div class=\"row\"><label>Balance Inhibit</label><select id=\"canInhibitEnabled\"><option value=\"0\">GPIO only</option><option value=\"1\">GPIO+CAN charger</option></select></div>
   <div class=\"row\"><label>Charger HB ID</label><input type=\"text\" id=\"chargerHeartbeatID\" style=\"width:80px\" placeholder=\"0x305\"></div>
   <div class=\"row\"><label>Charger active</label><span id=\"chargerStatus\" style=\"font-weight:bold\">--</span></div>
@@ -623,7 +623,7 @@ bool WiFiManager::begin()
         int defaultCells = 6;
         if (settings.cmuType == CMU_BMW_I3 || settings.cmuType == CMU_BMW_I3_BUS || settings.cmuType == CMU_BMW_MINIE) {
             defaultCells = 12;
-        } else if (settings.cmuType == CMU_BMW_PHEV) {
+        } else if (settings.cmuType == CMU_BMW_PHEV || settings.cmuType == CMU_PACIFICA) {
             defaultCells = 16;
         } else if (settings.cmuType == CMU_VW) {
             defaultCells = 12;   // per module: 8/12/13 from the sub-frames received (see numCells below)

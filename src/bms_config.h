@@ -116,8 +116,37 @@ enum CmuType : uint8_t {
     CMU_BMW_MINIE    = 3,   // BMW Mini-E CSC (0x080 TX, 0x0A0-0x17F RX)
     CMU_BMW_PHEV     = 4,   // BMW PHEV SP06/SP41/SP44 — polled 50ms, 16 cells, 4 temps
     CMU_VW           = 5,   // VW CMU (MEB/MQB) — 0x0BA poll, 0x1B0-0x1EE cells, ext-ID temps/balance
+    CMU_PACIFICA     = 6,   // Chrysler Pacifica PHEV BPCM — 12 V wake pulse, 0x487-0x49E cells, 0x4A0/0x4A1 temps
 };
-#define CMU_TYPE_MAX            CMU_VW  // highest valid CmuType (range checks in UI/console)
+#define CMU_TYPE_MAX            CMU_PACIFICA  // highest valid CmuType (range checks in UI/console)
+
+// ---------------------------------------------------------------------------
+// Chrysler Pacifica PHEV BPCM (CMU_PACIFICA)
+// The BPCM is the pack's own BMS: it broadcasts on its own once woken by a
+// 12 V pulse on its wake pin, and balances internally (no balance commands).
+// Frame map from Slyd's bench DBC (diyelectriccar.com thread 211649, 2023
+// pack) - UNCONFIRMED on other pack years; see PacificaProtocol.h.
+//   0x487 + 4*(m-1) + sub   cells, module m 1..6, sub 0..3, 4 cells each
+//   0x4A0 / 0x4A1           temps, 2 per module (modules 1-3 / 4-6), byte-40
+//   0x307                   coolant outlet (byte 0) / inlet (byte 1), byte-40
+//   0x150                   HVIL status bits + 11-bit field (pack V or SOC?)
+// Wake: GPIO13 (Grove A yellow, free in CAN modes) drives an EXTERNAL
+// high-side switch that pulses 12 V onto BPCM connector pin 9.
+// ---------------------------------------------------------------------------
+#define PAC_MAX_MODS            6
+#define PAC_CELLS_PER_MOD       16
+#define PAC_TEMPS_PER_MOD       2
+#define PAC_CELL_ID_MIN         0x487
+#define PAC_CELL_ID_MAX         0x49E
+#define PAC_TEMP_ID_A           0x4A0   // modules 1-3
+#define PAC_TEMP_ID_B           0x4A1   // modules 4-6
+#define PAC_COOLANT_ID          0x307
+#define PAC_STATUS_ID           0x150
+#define PAC_TIMEOUT_MS          3000    // module offline after this long without cell frames
+#define PAC_TEMP_INVALID        -100.0f // sensor not yet reported
+#define PIN_PAC_WAKE            13      // GPIO13 Grove A yellow -> external 12 V high-side switch
+#define PAC_WAKE_ACTIVE         HIGH    // level that turns the switch on
+#define PAC_WAKE_PULSE_MS       200     // one pulse wakes, two pulses sleep (per Slyd) - length unconfirmed
 
 // ---------------------------------------------------------------------------
 // CAN-based balance inhibit

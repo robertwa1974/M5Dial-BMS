@@ -23,6 +23,12 @@ jobs:
       - name: Run VW CMU decoder test
         run: ./vw_decode_test
 
+      - name: Build Pacifica BPCM decoder test
+        run: g++ -std=c++11 -Wall -Wextra -Isrc -Itest/stubs test/pacifica_decode_test.cpp -o pacifica_decode_test
+
+      - name: Run Pacifica BPCM decoder test
+        run: ./pacifica_decode_test
+
       # The expected tables in the test are generated from Tom de Bree's
       # VWBMSV2 source. Regenerate them and fail if the committed copy differs.
       - name: Reference tables match VWBMSV2 source
