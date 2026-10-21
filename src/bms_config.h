@@ -191,23 +191,36 @@ enum CmuType : uint8_t {
 // Polling all 12 slots is safe on 6-module packs — modules at unassigned
 // addresses silently ignore the poll. Confirmed on hardware by mane2 on the
 // openinverter forum (BMW BMS modules thread, June 2025).
-//   RX 0x0A0-0x0AF  status/error frames per module (type nibble 0xA)
+// Reference: Tom de Bree's BMWPhevBMS @ 91a7b12; frame builders and decoders
+// with citations are in PhevProtocol.h.
+//   TX 0x080|slot  poll; CRC over id + buf[0..6] incl. the rolling counter
+//     (v7-beta7 left buf[6] out, so every poll had a wrong CRC)
+//   TX 0x0A0       ID management (reset / find unassigned / assign). Only sent
+//     on request (console PHEVASSIGN=1), never at boot - v7-beta7 wiped all
+//     module IDs at every boot and never re-assigned them.
+//   RX 0x0F0       reply from a CSC with no ID: 8-byte DMC (serial)
+//   RX 0x100-0x10F status/error frames per module (BMSModuleManager.cpp:106-150
+//     in the reference: id & 0x0F0 == 0x000; v7-beta7 decoded 0x0A0 instead)
 //     bytes 0-3 LE = 32-bit error word, bytes 4-5 LE = balstat
 //   RX 0x120-0x17F  cell voltages (6 sub-frame groups per module, LE 14-bit)
 //     type nibble 2-7 of lower byte: sub 0-5, 3 cells each (16 active of 18)
 //     Voltage encoding: lo + (hi & 0x3F) * 256 = millivolts
-//     Commit condition: framesRx == 0x3F (all 6 sub-frames received)
+//     Presence: sub-frames 0-2 (cells 1-9) received - v7-beta7 waited for all
+//     six (0x3F), so an 8-cell module that skips the upper sub-frames never
+//     appeared. Cells are written as their sub-frames arrive.
 //     Cell update suppressed when status frame indicates balancing active
 //   RX 0x180-0x18F  temperatures (4 sensors per module)
-//     bytes 0-3: each uint8, value - 40 = degC
+//     bytes 0-3: each uint8, value - 40 = degC (do not mark a module present)
 // ---------------------------------------------------------------------------
 #define BMW_PHEV_CELL_BASE      0x120   // PHEV: lowest cell sub-frame ID
 #define BMW_PHEV_CELL_MAX       0x17F   // PHEV: highest cell sub-frame ID
-#define BMW_PHEV_STATUS_BASE    0x0A0   // PHEV: status/error frames (type 0xA)
+#define BMW_PHEV_STATUS_BASE    0x100   // PHEV: status/error frames (was 0x0A0 in v7-beta7)
 #define BMW_PHEV_TEMP_BASE      0x180   // PHEV: temperature frames
 #define BMW_PHEV_TEMP_MAX       0x18F   // PHEV: highest temperature frame ID
 #define BMW_PHEV_CMD_BASE       0x080   // PHEV: TX command base (shared with Mini-E/i3bus)
-#define BMW_PHEV_MGMT_ID        0x0A0   // PHEV: management reset TX ID
+#define BMW_PHEV_MGMT_ID        0x0A0   // PHEV: management reset / ID assignment TX ID
+#define BMW_PHEV_UNASSIGNED_ID  0x0F0   // PHEV: RX reply from a CSC without an ID (DMC)
+#define BMW_PHEV_RESET_IDS      15      // IDs 0..14 cleared on reset (BMWPhevBMS.ino:3667)
 #define BMW_PHEV_CELLS_PER_MOD  16      // up to 16 cells per CSC module (SP44 uses 8 of 16)
 #define BMW_PHEV_TEMPS_PER_MOD  4       // 4 temperature sensors per module
 #define BMW_PHEV_MAX_MODS       12      // hardware max: 12 CSC modules per bus (SP44)
