@@ -1,0 +1,16 @@
+{
+  "name": "M5DialBMS TEST fix/phev-cells-temps dabea2e",
+  "version": "dabea2e",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        {
+          "path": "factory.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}

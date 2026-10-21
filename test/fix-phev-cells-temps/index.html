@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>M5DialBMS — TEST Installer</title>
+<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Syne:wght@400;600;800&display=swap');
+
+  :root {
+    --bg:      #0a0f0d;
+    --card:    #111a15;
+    --border:  #1e3028;
+    --ok:      #f59e0b;
+    --ok-dim:  #78350f;
+    --warn:    #f59e0b;
+    --text:    #e2f0e8;
+    --sub:     #6b8f76;
+    --mono:    'JetBrains Mono', monospace;
+    --sans:    'Syne', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  /* Subtle grid background */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(var(--border) 1px, transparent 1px),
+      linear-gradient(90deg, var(--border) 1px, transparent 1px);
+    background-size: 40px 40px;
+    opacity: 0.4;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .wrap {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    max-width: 680px;
+    padding: 2.5rem 1.5rem 4rem;
+  }
+
+  /* ---- Header ---- */
+  header {
+    text-align: center;
+    margin-bottom: 2.5rem;
+  }
+
+  .badge {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: .7rem;
+    color: var(--ok);
+    border: 1px solid var(--ok-dim);
+    border-radius: 2rem;
+    padding: .25rem .9rem;
+    letter-spacing: .08em;
+    margin-bottom: 1.2rem;
+  }
+
+  h1 {
+    font-size: clamp(2rem, 6vw, 3rem);
+    font-weight: 800;
+    line-height: 1.05;
+    letter-spacing: -.02em;
+    color: var(--text);
+  }
+
+  h1 span { color: var(--ok); }
+
+  .subtitle {
+    margin-top: .7rem;
+    font-size: .95rem;
+    color: var(--sub);
+    font-weight: 400;
+  }
+
+  /* ---- Cards ---- */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: .75rem;
+    padding: 1.5rem;
+    margin-bottom: 1rem;
+  }
+
+  .card-num {
+    display: flex;
+    align-items: flex-start;
+    gap: 1rem;
+  }
+
+  .num {
+    flex-shrink: 0;
+    width: 2rem;
+    height: 2rem;
+    border-radius: 50%;
+    background: var(--ok-dim);
+    color: var(--ok);
+    font-family: var(--mono);
+    font-size: .8rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: .1rem;
+  }
+
+  .card-body h2 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: .5rem;
+    color: var(--text);
+  }
+
+  .card-body p, .card-body li {
+    font-size: .88rem;
+    color: var(--sub);
+    line-height: 1.6;
+  }
+
+  .card-body ul {
+    padding-left: 1.2rem;
+    margin-top: .4rem;
+  }
+
+  .card-body li { margin-bottom: .2rem; }
+
+  code {
+    font-family: var(--mono);
+    font-size: .82em;
+    color: var(--ok);
+    background: #0f1f16;
+    padding: .1em .4em;
+    border-radius: .25rem;
+  }
+
+  /* ---- Install card ---- */
+  .install-card {
+    background: var(--card);
+    border: 1px solid var(--ok-dim);
+    border-radius: .75rem;
+    padding: 2rem 1.5rem;
+    margin-bottom: 1rem;
+    text-align: center;
+  }
+
+  .install-card h2 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin-bottom: .4rem;
+  }
+
+  .install-card p {
+    font-size: .85rem;
+    color: var(--sub);
+    margin-bottom: 1.5rem;
+    line-height: 1.5;
+  }
+
+  esp-web-install-button {
+    --esp-tools-button-color: var(--ok);
+    --esp-tools-button-text-color: #000;
+  }
+
+  /* ESP Web Tools renders a <button> — style it */
+  esp-web-install-button::part(button) {
+    background: var(--ok);
+    color: #000;
+    font-family: var(--sans);
+    font-weight: 700;
+    font-size: .95rem;
+    padding: .75rem 2.5rem;
+    border: none;
+    border-radius: .4rem;
+    cursor: pointer;
+    letter-spacing: .02em;
+    transition: opacity .15s;
+  }
+
+  esp-web-install-button::part(button):hover { opacity: .85; }
+
+  .no-serial {
+    display: none;
+    background: #1c1200;
+    border: 1px solid #78350f;
+    border-radius: .5rem;
+    padding: .8rem 1rem;
+    font-size: .83rem;
+    color: var(--warn);
+    margin-top: 1rem;
+    text-align: left;
+  }
+
+  .no-serial a { color: var(--warn); }
+
+  /* Show warning if browser lacks Web Serial */
+  @supports not (display: revert) {
+    .no-serial { display: block; }
+  }
+
+  .warn-box {
+    background: #1c1200;
+    border: 1px solid #78350f;
+    border-radius: .5rem;
+    padding: .75rem 1rem;
+    font-size: .82rem;
+    color: var(--warn);
+    margin-top: .75rem;
+    line-height: 1.5;
+  }
+
+  /* ---- After flash steps ---- */
+  .steps {
+    counter-reset: step;
+    list-style: none;
+    padding: 0;
+    margin-top: .5rem;
+  }
+
+  .steps li {
+    counter-increment: step;
+    display: flex;
+    gap: .75rem;
+    align-items: flex-start;
+    font-size: .88rem;
+    color: var(--sub);
+    line-height: 1.6;
+    margin-bottom: .6rem;
+  }
+
+  .steps li::before {
+    content: counter(step);
+    flex-shrink: 0;
+    width: 1.4rem;
+    height: 1.4rem;
+    background: var(--border);
+    color: var(--ok);
+    font-family: var(--mono);
+    font-size: .72rem;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: .15rem;
+  }
+
+  /* ---- Footer ---- */
+  footer {
+    margin-top: 2rem;
+    text-align: center;
+    font-size: .78rem;
+    color: var(--sub);
+    font-family: var(--mono);
+  }
+
+  footer a { color: var(--ok); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
+
+  .test-banner {
+    background: #2a1600;
+    border: 2px solid var(--warn);
+    border-radius: .75rem;
+    padding: 1.1rem 1.25rem;
+    margin-bottom: 1.25rem;
+    font-size: .88rem;
+    line-height: 1.6;
+    color: var(--text);
+  }
+  .test-banner strong { color: var(--warn); }
+  .test-banner a { color: var(--warn); }
+  .build-info {
+    font-family: var(--mono);
+    font-size: .78rem;
+    color: var(--sub);
+    margin-top: .5rem;
+    word-break: break-all;
+  }
+
+  .divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 1rem 0;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="badge">TEST BUILD · NOT A RELEASE</div>
+    <h1>M5Dial<span>BMS</span> test</h1>
+    <p class="subtitle">One-click installer for a development branch</p>
+  </header>
+
+  <div class="test-banner">
+    ⚠️ <strong>This is untested development firmware</strong> built automatically from
+    branch <code>fix/phev-cells-temps</code>. Use it only if you have been asked to test it, and
+    follow the test plan for that branch. For normal use, install the
+    <a href="../../">stable firmware</a> instead.
+    <div class="build-info">
+      Branch: <a href="https://github.com/robertwa1974/M5Dial-BMS/tree/fix/phev-cells-temps" target="_blank">fix/phev-cells-temps</a><br>
+      Commit: <a href="https://github.com/robertwa1974/M5Dial-BMS/commit/dabea2e9e263dfccca1ccd0e15bb536a0a239660" target="_blank">dabea2e</a> · built 2026-10-21 03:25 UTC
+    </div>
+  </div>
+
+  <!-- Step 1: Requirements -->
+  <div class="card card-num">
+    <div class="num">1</div>
+    <div class="card-body">
+      <h2>Before you start</h2>
+      <ul>
+        <li>Read the <strong>test plan</strong> for this build:
+          <a style="color:var(--ok)" href="https://github.com/robertwa1974/M5Dial-BMS/pulls?q=is%3Apr+head%3Afix/phev-cells-temps" target="_blank">pull request</a>
+          (the PR links the test plan, e.g. <code>TESTING_BMW_PHEV.md</code>)</li>
+        <li><strong>M5Stack Dial</strong> with a USB-C cable that supports <strong>data transfer</strong></li>
+        <li>Google <strong>Chrome</strong> or Microsoft <strong>Edge</strong> (Web Serial)</li>
+        <li>A serial terminal at 115200 baud to capture the log — the test plan asks for it</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- Step 2: Install -->
+  <div class="install-card">
+    <h2>Install test firmware</h2>
+    <p>Installs build <code>dabea2e</code> from <code>fix/phev-cells-temps</code>.<br>The process takes about 30–60 seconds.</p>
+    <esp-web-install-button manifest="manifest.json">
+      <span slot="activate">Click to Install TEST build</span>
+      <span slot="unsupported">
+        <div class="no-serial" style="display:block">
+          ⚠️ Your browser doesn't support Web Serial.<br>
+          Please use <strong>Chrome</strong> or <strong>Edge</strong>.<br>
+          Alternatively, download <a href="factory.bin">factory.bin</a> and flash it with
+          <a href="https://espressif.github.io/esptool-js/" target="_blank">esptool-js</a> at address <code>0x0</code>.
+        </div>
+      </span>
+    </esp-web-install-button>
+    <div class="warn-box">
+      ⚠️ If you choose to erase the device, saved settings are lost. Note them down first.
+      To go back afterwards, install the <a style="color:var(--warn)" href="../../">stable firmware</a>.
+    </div>
+    <p style="margin-top:1rem;margin-bottom:0"><a style="color:var(--ok)" href="factory.bin">Download factory.bin</a> (flash at <code>0x0</code>)</p>
+  </div>
+
+  <!-- Step 3: After flashing -->
+  <div class="card card-num">
+    <div class="num">3</div>
+    <div class="card-body">
+      <h2>After flashing</h2>
+      <ol class="steps">
+        <li>Open the serial terminal (115200 baud) and keep the log running</li>
+        <li>Follow the steps in the test plan, in order</li>
+        <li>Send the log, photos and results table back as the test plan describes</li>
+      </ol>
+    </div>
+  </div>
+
+  <hr class="divider">
+
+  <footer>
+    <a href="https://github.com/robertwa1974/M5Dial-BMS" target="_blank">GitHub</a>
+    &nbsp;·&nbsp;
+    TEST build dabea2e
+    &nbsp;·&nbsp;
+    <a href="../../">Stable installer</a>
+  </footer>
+
+</div>
+</body>
+</html>
