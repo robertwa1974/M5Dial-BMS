@@ -10,6 +10,11 @@ on:
 permissions:
   contents: write
 
+# Shared with test-flasher.yml so the two never push to gh-pages at once
+concurrency:
+  group: gh-pages
+  cancel-in-progress: false
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
@@ -129,4 +134,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./deploy
           publish_branch: gh-pages
+          # Keep the test installers under test/ (test-flasher.yml). Without
+          # this every main/tag deploy deleted the whole site first.
+          keep_files: true
           commit_message: "Deploy web flasher ${{ github.ref_name }}"

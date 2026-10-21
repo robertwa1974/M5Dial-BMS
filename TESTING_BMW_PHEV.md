@@ -35,9 +35,12 @@ Compared with v7-beta7, the firmware now:
 
 ## 1. Flash and set up
 
-1. Flash the test firmware `.bin` at offset `0x0`. Either:
+1. Flash the test firmware. Easiest, in Chrome or Edge:
+   **https://robertwa1974.github.io/M5Dial-BMS/test/fix-phev-cells-temps/** → *Click to Install TEST build*.
+   The page shows the commit it was built from; include it in your report. It always has
+   the latest build of this branch. Alternatively download `factory.bin` from that page and:
    - in Chrome/Edge: https://espressif.github.io/esptool-js/ → Connect → flash address `0x0` → Program, or
-   - `esptool.py --chip esp32s3 write_flash 0x0 <file>.bin`
+   - `esptool.py --chip esp32s3 write_flash 0x0 factory.bin`
 2. Open the serial terminal at 115200 baud. Press Enter, then type `h` for the menu.
 3. Send these commands, one per line:
    ```
@@ -116,7 +119,7 @@ Please attach to the GitHub pull request or issue, or send to the maintainer:
 |---|---|
 | Pack | Vehicle and model year, pack part number if visible, number of modules, cells per module |
 | Supply | CSC supply voltage used, and how it is wired |
-| Firmware | The file name of the `.bin` you flashed |
+| Firmware | The commit shown on the test installer page (or the `.bin` file name) |
 | Serial log | Everything from boot, for each test |
 | Multimeter readings | Cell-by-cell table for at least one module, next to the displayed values |
 | Photos | Pack page and one module page |
