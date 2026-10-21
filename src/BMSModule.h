@@ -63,7 +63,7 @@ private:
     float   lowestCellVolt[16];
     float   highestCellVolt[16];
     float   moduleVolt;
-    float   temperatures[2];
+    float   temperatures[4];        // up to 4 sensors (2=Tesla/i3, 4=BMW PHEV)
     float   lowestTemperature;
     float   highestTemperature;
     float   lowestModuleVolt;
