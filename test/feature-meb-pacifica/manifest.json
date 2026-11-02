@@ -1,0 +1,16 @@
+{
+  "name": "M5DialBMS TEST feature/meb-pacifica 5d95f16",
+  "version": "5d95f16",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        {
+          "path": "factory.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}
