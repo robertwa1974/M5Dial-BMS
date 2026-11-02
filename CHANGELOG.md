@@ -2,7 +2,19 @@
 
 ---
 
-## v7-beta8 — October 2026 (unreleased)
+## Unreleased
+
+### New Features
+- **Web firmware update (OTA)** — install a new `firmware.bin` from the dashboard (Settings → Firmware update) over WiFi, keeping saved settings. The upload is checked before anything is written (`factory.bin`, wrong chip or wrong password are refused), verified, and then the Dial restarts. Operating Manual 11.1a.
+- **Automatic rollback** — a web-updated image must run normally for 30 s before it is confirmed; if it crashes or resets first, the bootloader goes back to the previous version (the bootloader already had rollback enabled; the app now confirms itself instead of at start-up).
+- **`WIFIPASS=`** — serial-only command to change the WiFi password, which also authorises web updates.
+- **Firmware version** — each build carries its version (release tag, or branch@commit for CI builds, or `git describe` locally), shown on the console, the display's settings page and the web page. `tools/fw_version.py` generates `src/FwVersion.h`.
+- `firmware.bin` is published next to `factory.bin` on the web installer and test installer pages.
+- Host unit test for the upload check (`test/ota_check_test.cpp`), run in CI.
+
+---
+
+## v7-beta8 — November 2026
 
 ### Bug Fixes
 - **BMW PHEV cells 7–16 showed 0.000 V** — `BMSModule::setNumCells()` rejected anything above 12, so PHEV modules stayed at the default 6 cells and `getCellVoltage()` returned 0 for cells 7–16 on the display and web UI. Those cells were also left out of the module/pack low/high/average cell calculations (0x35A alarms, 0x373 min/max). The limit is now 16, the size of `cellVolt[]`.
