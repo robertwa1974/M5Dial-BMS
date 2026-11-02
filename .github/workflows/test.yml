@@ -28,3 +28,9 @@ jobs:
 
       - name: Run SoC calculation test
         run: ./soc_calc_test
+
+      - name: Build OTA image check test
+        run: g++ -std=c++11 -Wall -Wextra -Isrc test/ota_check_test.cpp -o ota_check_test
+
+      - name: Run OTA image check test
+        run: ./ota_check_test

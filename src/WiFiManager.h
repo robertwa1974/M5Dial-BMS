@@ -9,6 +9,9 @@
 // CAN log buffer served at /api/can.  Safe to call even when WiFi is off.
 void wifiLogCAN(uint32_t id, uint8_t *data, uint8_t len);
 
+// True while a web firmware upload is being written (main loop pauses balancing)
+bool wifiOtaActive();
+
 class WiFiManager {
 public:
     WiFiManager();
