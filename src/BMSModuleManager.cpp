@@ -798,7 +798,6 @@ int BMSModuleManager::cellsFor(int addr)
     }
     // Pacifica BPCM: always 16 cells per module (6 x 16s)
     if (settings.cmuType == CMU_PACIFICA) {
-        modules[addr].setNumCells(PAC_CELLS_PER_MOD);
         return PAC_CELLS_PER_MOD;
     }
     // VW CMU: modules 1-9 can carry 13 cells (sub-frame 3), 10-16 at most 12
@@ -813,7 +812,6 @@ int BMSModuleManager::cellsFor(int addr)
         int n = (ov >= 1 && ov <= maxCells) ? (int)ov
               : vwCellsFromSubFrames(vwSubSeen[addr]);
         if (n > maxCells) n = maxCells;
-        modules[addr].setNumCells(n);
         return n;
     }
     uint8_t ov = settings.moduleCells[addr];
@@ -961,8 +959,10 @@ void BMSModuleManager::getAllVoltTempFromPHEV()
 // ---------------------------------------------------------------------------
 void BMSModuleManager::getAllVoltTempFromVW()
 {
-    packVolt = 0.0f;
-    numFoundModules = 0;
+    // Local sums, published once at the end (see getAllVoltTemp).
+    float sumV  = 0.0f;
+    int   found = 0;
+    int   cells = 0;
     // Pack temperature range for this cycle (0x373 min/max temp)
     float loT = 200.0f;
     float hiT = -100.0f;
@@ -978,9 +978,10 @@ void BMSModuleManager::getAllVoltTempFromVW()
         modules[x].setExists(alive);
         if (!alive) continue;
 
-        numFoundModules++;
+        found++;
         vwSubSeen[x] = d.subSeen;
         int n = getModuleCells(x);   // also sets the module's numCells
+        cells += n;
 
         float modV = 0.0f;
         for (int c = 0; c < n; c++) {
@@ -1007,11 +1008,13 @@ void BMSModuleManager::getAllVoltTempFromVW()
         modules[x].setFaults(0);
         modules[x].setAlerts(0);
 
-        packVolt += modV;
+        sumV += modV;
     }
 
     int np = (settings.numParallel > 0) ? settings.numParallel : BMS_NUM_PARALLEL;
-    if (np > 1) packVolt /= np;
+    packVolt        = (np > 1) ? sumV / np : sumV;
+    seriesCells     = seriesCellsFrom(cells, np);
+    numFoundModules = found;
 
     // Current pack temperature range, so 0x373 carries real temperatures.
     // With no valid sensor these stay at the "unset" sentinels (200 / -100),
@@ -1022,7 +1025,7 @@ void BMSModuleManager::getAllVoltTempFromVW()
 
     // Un-bled snapshot: only while no cell is bleeding and VW_SETTLE_MS after
     // the last stop, so these readings are free of balance-current drop.
-    if (!vwBleeding && numFoundModules > 0 &&
+    if (!vwBleeding && found > 0 &&
         (millis() - vwLastStopMs) >= (uint32_t)VW_SETTLE_MS) {
         vwSnapHigh = getHighCellVolt();
         vwSnapMs   = millis();
@@ -1042,8 +1045,10 @@ void BMSModuleManager::getAllVoltTempFromVW()
 // ---------------------------------------------------------------------------
 void BMSModuleManager::getAllVoltTempFromPacifica()
 {
-    packVolt = 0.0f;
-    numFoundModules = 0;
+    // Local sums, published once at the end (see getAllVoltTemp).
+    float sumV  = 0.0f;
+    int   found = 0;
+    int   cells = 0;
     // Pack temperature range for this cycle (0x373 min/max temp)
     float loT = 200.0f;
     float hiT = -100.0f;
@@ -1056,8 +1061,9 @@ void BMSModuleManager::getAllVoltTempFromPacifica()
         modules[x].setExists(alive);
         if (!alive) continue;
 
-        numFoundModules++;
+        found++;
         int n = getModuleCells(x);   // also sets the module's numCells
+        cells += n;
 
         float modV = 0.0f;
         for (int c = 0; c < n; c++) {
@@ -1079,11 +1085,13 @@ void BMSModuleManager::getAllVoltTempFromPacifica()
         modules[x].setFaults(0);
         modules[x].setAlerts(0);
 
-        packVolt += modV;
+        sumV += modV;
     }
 
     int np = (settings.numParallel > 0) ? settings.numParallel : BMS_NUM_PARALLEL;
-    if (np > 1) packVolt /= np;
+    packVolt        = (np > 1) ? sumV / np : sumV;
+    seriesCells     = seriesCellsFrom(cells, np);
+    numFoundModules = found;
 
     // Current pack temperature range, so 0x373 carries real temperatures
     // (same convention as getAllVoltTempFromVW()).
