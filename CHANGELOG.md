@@ -2,7 +2,7 @@
 
 ---
 
-## Unreleased
+## v7-beta9 — November 2026
 
 ### New Features
 - **Web firmware update (OTA)** — install a new `firmware.bin` from the dashboard (Settings → Firmware update) over WiFi, keeping saved settings. The upload is checked before anything is written (`factory.bin`, wrong chip or wrong password are refused), verified, and then the Dial restarts. Operating Manual 11.1a.
