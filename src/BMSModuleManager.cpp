@@ -324,7 +324,10 @@ void BMSModuleManager::wakeBoards()
 void BMSModuleManager::getAllVoltTemp()
 {
     bms_modules_text = "";
-    packVolt = 0.0f;
+    // Sum into a local and publish once: the web server reads packVolt from
+    // another task, and a module read over UART takes long enough that it
+    // used to see a partly summed pack voltage.
+    float sumV = 0.0f;
     float lowCell  = 1000.0f;
     float highCell = -1000.0f;
 
@@ -343,7 +346,7 @@ void BMSModuleManager::getAllVoltTemp()
             if (low  < lowCell)  lowCell  = low;
             if (high > highCell) highCell = high;
 
-            packVolt += modules[x].getModuleVoltage();
+            sumV += modules[x].getModuleVoltage();
 
             // Only record temperatures from sensors that are actually connected
             // Unpopulated thermistors read ~-89C; ignore anything below -70C
@@ -362,7 +365,7 @@ void BMSModuleManager::getAllVoltTemp()
 
     // Divide by parallel string count for true pack voltage
     int ps = (Pstring > 0) ? Pstring : 1;
-    packVolt = packVolt / (float)ps;
+    packVolt = sumV / (float)ps;
     if (packVolt > highestPackVolt) highestPackVolt = packVolt;
     if (packVolt < lowestPackVolt)  lowestPackVolt  = packVolt;
 
@@ -640,8 +643,9 @@ int BMSModuleManager::getModuleCells(int addr)
 // ---------------------------------------------------------------------------
 void BMSModuleManager::getAllVoltTempFromCAN()
 {
-    packVolt = 0.0f;
-    numFoundModules = 0;
+    // Local sums, published once at the end (see getAllVoltTemp).
+    float sumV  = 0.0f;
+    int   found = 0;
 
     for (int x = 1; x <= BMW_I3_MAX_MODS; x++) {
         I3SlaveData d;
@@ -658,7 +662,7 @@ void BMSModuleManager::getAllVoltTempFromCAN()
         modules[x].setExists(alive);
         if (!alive) continue;
 
-        numFoundModules++;
+        found++;
 
         // Push cell voltages
         modules[x].setNumCells(BMW_I3_CELLS_PER_MOD);
@@ -673,11 +677,12 @@ void BMSModuleManager::getAllVoltTempFromCAN()
         modules[x].setFaults(0);
         modules[x].setAlerts(0);
 
-        packVolt += modV;
+        sumV += modV;
     }
 
     int np = (settings.numParallel > 0) ? settings.numParallel : BMS_NUM_PARALLEL;
-    if (np > 1) packVolt /= np;
+    packVolt        = (np > 1) ? sumV / np : sumV;
+    numFoundModules = found;
 }
 
 // ---------------------------------------------------------------------------
@@ -688,8 +693,9 @@ void BMSModuleManager::getAllVoltTempFromCAN()
 // ---------------------------------------------------------------------------
 void BMSModuleManager::getAllVoltTempFromPHEV()
 {
-    packVolt = 0.0f;
-    numFoundModules = 0;
+    // Local sums, published once at the end (see getAllVoltTemp).
+    float sumV  = 0.0f;
+    int   found = 0;
 
     for (int x = 1; x <= BMW_PHEV_MAX_MODS; x++) {
         PhevSlaveData d;
@@ -702,7 +708,7 @@ void BMSModuleManager::getAllVoltTempFromPHEV()
         modules[x].setExists(alive);
         if (!alive) continue;
 
-        numFoundModules++;
+        found++;
         int n = getModuleCells(x);   // 16, or the per-module override
 
         float modV = 0.0f;
@@ -735,9 +741,10 @@ void BMSModuleManager::getAllVoltTempFromPHEV()
         modules[x].setFaults(faultByte);
         modules[x].setAlerts(0);
 
-        packVolt += modV;
+        sumV += modV;
     }
 
     int np = (settings.numParallel > 0) ? settings.numParallel : BMS_NUM_PARALLEL;
-    if (np > 1) packVolt /= np;
+    packVolt        = (np > 1) ? sumV / np : sumV;
+    numFoundModules = found;
 }
