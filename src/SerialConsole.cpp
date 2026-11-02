@@ -6,12 +6,14 @@
 #include "SerialConsole.h"
 #include "Logger.h"
 #include "BMSModuleManager.h"
+#include "CANManager.h"
 #include <EEPROM.h>
 
 template<class T> inline Print &operator<<(Print &obj, T arg) { obj.print(arg); return obj; }
 
 extern EEPROMSettings   settings;
 extern BMSModuleManager bms;
+extern CANManager       can;
 
 bool     printPrettyDisplay;
 uint32_t prettyCounter;
@@ -109,6 +111,8 @@ void SerialConsole::printMenu() {
                     settings.canInhibitEnabled ? "ON" : "OFF");
     Logger::console("  CHGID=0xNNN      Charger heartbeat CAN ID [0x%03X]",
                     settings.chargerHeartbeatID);
+    Logger::console("  PHEVASSIGN=1     BMW PHEV: reset + re-assign all CSC IDs");
+    Logger::console("                   (CMUTYPE=4, all modules powered and on CAN)");
     Logger::console("================================================\n");
 }
 
@@ -369,6 +373,21 @@ void SerialConsole::handleConfigCmd() {
                 Logger::console("CMU type already set to that value.");
             }
         } else Logger::console("Invalid (0=Tesla, 1=BMW i3, 2=BMW i3 Bus, 3=BMW Mini-E, 4=BMW PHEV)");
+    }
+    // --- BMW PHEV: reset and re-assign CSC IDs (not saved) ---
+    else if (cmdString == "PHEVASSIGN") {
+        if (newValue != 1) {
+            Logger::console("Use PHEVASSIGN=1");
+        } else if (settings.cmuType != CMU_BMW_PHEV) {
+            Logger::console("PHEVASSIGN only works in BMW PHEV mode (CMUTYPE=4)");
+        } else if (!can.isRunning()) {
+            Logger::console("CAN is not running");
+        } else if (can.isPhevAssigning()) {
+            Logger::console("PHEV ID assignment already running");
+        } else {
+            Logger::console("PHEV: ID assignment requested - progress follows");
+            can.startPhevIdAssignment();
+        }
     }
     // --- v6: CAN-based balance inhibit ---
     else if (cmdString == "CANINHIBIT") {

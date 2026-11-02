@@ -1,0 +1,109 @@
+name: Deploy Test Flasher
+
+# One-click web installer for development branches, for testers.
+# Every push to a fix/** or feature/** branch that contains this workflow
+# builds the firmware and publishes it to its own folder on GitHub Pages:
+#   https://<owner>.github.io/<repo>/test/<branch with / replaced by ->/
+# e.g. .../M5Dial-BMS/test/fix-phev-cells-temps/
+#
+# keep_files: true + destination_dir means only that folder is replaced; the
+# stable installer at the site root (build-and-deploy.yml) is never touched.
+# Both workflows share the gh-pages concurrency group so they never push to
+# gh-pages at the same time.
+
+on:
+  push:
+    branches: [ 'fix/**', 'feature/**' ]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gh-pages
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install esptool
+        run: pip install esptool
+
+      - name: Set up PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: ${{ runner.os }}-platformio-${{ hashFiles('platformio.ini') }}
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Build firmware
+        run: pio run -e m5dial
+
+      # Same artifacts and offsets as build-and-deploy.yml
+      - name: Merge binaries into factory.bin
+        run: |
+          BUILD_DIR=".pio/build/m5dial"
+          BOOTLOADER="$BUILD_DIR/bootloader.bin"
+          if [ ! -f "$BOOTLOADER" ]; then
+            echo "ERROR: bootloader.bin not found in build dir — build may have failed"
+            exit 1
+          fi
+          BOOT_APP0=$(find ~/.platformio -name "boot_app0.bin" 2>/dev/null | head -1)
+          esptool.py --chip esp32s3 merge_bin \
+            --output factory.bin \
+            --flash_mode dio \
+            --flash_size 8MB \
+            0x0000   $BOOTLOADER \
+            0x8000   $BUILD_DIR/partitions.bin \
+            0xe000   $BOOT_APP0 \
+            0x10000  $BUILD_DIR/firmware.bin
+          echo "factory.bin size: $(wc -c < factory.bin) bytes"
+          sha256sum factory.bin
+
+      - name: Prepare test deploy directory
+        run: |
+          SLUG="${GITHUB_REF_NAME//\//-}"
+          SHORT="${GITHUB_SHA::7}"
+          BUILT="$(date -u '+%Y-%m-%d %H:%M UTC')"
+          echo "SLUG=$SLUG" >> $GITHUB_ENV
+          mkdir -p deploy
+          cp factory.bin deploy/
+          for f in index.html manifest.json; do
+            sed -e "s|__BRANCH__|${GITHUB_REF_NAME}|g" \
+                -e "s|__SHORTSHA__|${SHORT}|g" \
+                -e "s|__SHA__|${GITHUB_SHA}|g" \
+                -e "s|__BUILT__|${BUILT}|g" \
+                -e "s|__REPO__|${GITHUB_REPOSITORY}|g" \
+                docs/test/$f > deploy/$f
+          done
+          if grep -q "__[A-Z]*__" deploy/index.html deploy/manifest.json; then
+            echo "ERROR: unreplaced placeholder"; exit 1
+          fi
+          ls -la deploy/
+
+      - name: Deploy to GitHub Pages (test folder only)
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./deploy
+          publish_branch: gh-pages
+          destination_dir: test/${{ env.SLUG }}
+          keep_files: true
+          commit_message: "Deploy test flasher ${{ github.ref_name }}"
+
+      - name: Test installer URL
+        run: |
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+          echo "https://${OWNER}.github.io/${REPO}/test/${SLUG}/" | tee -a $GITHUB_STEP_SUMMARY

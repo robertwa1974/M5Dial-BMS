@@ -185,9 +185,11 @@ v7 supports five CMU types. The mode is stored in flash and survives reboots. Ch
 ### 3.5 BMW PHEV SP06/SP41 (CMUTYPE=4)
 
 - Polled master/slave protocol — modules are completely silent until polled
-- BMS sends a poll command to each slot every 50ms (rotating through slots 0–5)
-- 16 cells per module across 6 sub-frames per poll cycle
+- BMS sends a poll command to one slot every 50ms, rotating through slots 0–11 (each module every 600 ms; 6-module packs ignore the unused slots)
+- Each module only answers polls for its own **ID** (slot). Packs taken from a car normally still have their IDs; otherwise assign them with `PHEVASSIGN=1` (see 4.3)
+- 16 cells per module across 6 sub-frames per poll cycle (per-module override 8 for 8-cell modules)
 - Little-endian 14-bit voltage encoding, 1mV/bit
+- If no module answers within 3 s, polling backs off to about one frame per second until one does
 
 ---
 
@@ -248,9 +250,17 @@ The BMS begins sending keepalive bursts immediately at boot. Modules appear as `
 
 ### 4.3 PHEV SP06/SP41 (CMUTYPE=4)
 
-No enrollment. The BMS polls slots 0–5 in rotation at 50ms intervals. A module is marked `existing` on first valid poll response. Slots that never respond remain absent and are not counted.
+The BMS polls slots 0–11 in rotation at 50ms intervals. Each module (CSC) answers only polls for its own ID. A module is marked `existing` once its first three cell sub-frames (cells 1–9) arrive, and absent again after 3 s without them. Temperature frames alone never mark a module present.
 
-The poll command ID and response ID vary by sub-frame; this is handled automatically by the firmware. No user configuration is required beyond setting `CMUTYPE=4`.
+**Module IDs.** Modules removed from a working car normally keep the IDs the car's BMS gave them, and need no setup beyond `CMUTYPE=4`. If no modules appear, assign IDs:
+
+1. Power all modules and connect them to the CAN bus; set `CMUTYPE=4`.
+2. Send `PHEVASSIGN=1` on the serial console.
+3. The firmware clears all module IDs, then gives IDs 0, 1, 2 … to each module that answers (on CAN ID 0x0F0 with its serial number). Progress is logged:
+   `PHEV: assigning ID 0 to CSC …` … `PHEV: ID assignment finished - N CSC(s) assigned`.
+4. Modules appear within a few seconds. IDs follow the order in which modules answered, which may not match the physical order — note which module is which.
+
+> ⚠️ **v7-beta7 and earlier cleared every module's ID at each boot in PHEV mode and never re-assigned them.** If those versions were ever run with your modules connected, run `PHEVASSIGN=1` once.
 
 ### 4.4 Verifying CAN Activity
 
@@ -294,7 +304,7 @@ Rotate the encoder to navigate through detected modules. Each page shows:
 - T1 and T2 temperature readings
 - Fault badge: `OK` (green) or `FAULT:0xXX` (red)
 
-Cell count displayed adapts automatically to the CMU type: 6 cells for Tesla, 12 for i3/Mini-E/Bus Pack, 16 for PHEV.
+Cell count displayed adapts automatically to the CMU type: 6 cells for Tesla, 12 for i3/Mini-E/Bus Pack, 16 for PHEV (or the per-module override, e.g. 8).
 
 ### 5.3 Settings Page
 
@@ -412,12 +422,16 @@ A dedicated FreeRTOS task on core 0 receives all frames. Received frames serve t
 | 0x120–0x15F | Cell voltages, slots 0–7 (multiple sub-frames, LE 16-bit 1mV/bit) |
 | 0x170–0x17F | Temperatures, slots 0–7 (data[4]–40 = °C) |
 
-**PHEV SP06/SP41 (CMUTYPE=4)**
+**PHEV SP06/SP41/SP44 (CMUTYPE=4)** — from Tom de Bree's BMWPhevBMS; module = (ID & 0x0F) + 1
 
-| Frame ID | Content |
-|---|---|
-| Poll command | Sent by BMS every 50ms per slot | 
-| Response frames | 6 sub-frames per module, 16 cells LE 14-bit 1mV/bit |
+| Frame ID | Direction | Content |
+|---|---|---|
+| 0x080–0x08B | TX | Poll, one slot every 50 ms: `C7 10 00 00 40 01 <counter<<4> <CRC>` (CRC-8 0x1D over ID + bytes 0–6) |
+| 0x0A0 | TX | ID management (reset / find unassigned / assign) — only on `PHEVASSIGN=1` |
+| 0x0F0 | RX | Module without an ID answering "find unassigned" (8-byte serial) |
+| 0x100–0x10B | RX | Status: bytes 0–3 error word, bytes 4–5 balance status |
+| 0x120–0x17B | RX | Cells: 6 sub-frames per module, 16 cells LE 14-bit 1mV/bit |
+| 0x180–0x18B | RX | Temperatures: 4 sensors, byte − 40 = °C |
 
 ### 7.4 Balance Inhibit via CAN
 
@@ -501,6 +515,7 @@ All settings are saved to flash automatically after each valid command.
 | `CMUTYPE=0` | 0–4 | 0=Tesla 1=BMW i3 2=BMW i3 Bus 3=BMW Mini-E 4=BMW PHEV (reboot required) |
 | `CANINHIBIT=1` | 0 or 1 | Enable CAN charger heartbeat balance inhibit |
 | `CHGID=0x305` | 0x001–0x7FF | CAN ID to watch for charger heartbeat |
+| `PHEVASSIGN=1` | 1 | BMW PHEV: clear all module IDs and assign new ones (not saved; see 4.3) |
 | `BATTERYID=1` | 1–14 | Battery ID in SimpBMS CAN frames |
 
 ---
@@ -526,7 +541,7 @@ BMW CSC modules do not expose a fault register over CAN. Fault detection is:
 
 - **Cell OV/UV** — any cell reading outside the configured thresholds
 - **Module timeout** — no CAN frame received from a module for more than 3 seconds (module is marked absent)
-- **PHEV errorWord** — non-zero `errorWord` in poll response sets the module fault flag
+- **PHEV errorWord** — non-zero error word in the module's status frame (0x100 + module) sets the module fault flag (`FAULT:0x01` badge). The raw error word and balance status are logged on the console whenever they change
 
 ---
 
@@ -595,7 +610,8 @@ All libraries are pinned to exact versions in `platformio.ini` and fetched from 
 | Web UI CMU type not saving | DOM injection ordering bug | Flash updated `WiFiManager.cpp` with fixed `renderSettingsForm()` |
 | EEPROM mismatch on boot | Firmware version change | Normal — defaults are written automatically; re-enter settings |
 | FastLED / TWAI watchdog reset | RMT peripheral conflict on CAN RX GPIO | Disable LED calls before TWAI init; confirmed fixed in v7 |
-| PHEV modules silent | Poll commands not reaching modules | Confirm `CMUTYPE=4`; check CAN wiring; PHEV modules are completely silent until polled |
+| PHEV modules silent | Poll commands not reaching modules, or modules have no ID | Confirm `CMUTYPE=4`; check CAN wiring and module supply; PHEV modules are completely silent until polled. If 0x0F0 frames appear or v7-beta7 was ever used, run `PHEVASSIGN=1` (4.3) |
+| PHEV module shows 0 V on cells 9–16 | 8-cell modules (SP44) | Set the module's cell override to 8 in the web Settings tab |
 
 ---
 

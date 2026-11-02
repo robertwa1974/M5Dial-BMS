@@ -576,7 +576,9 @@ void BMSModuleManager::printPackDetails()
             SERIALCONSOLE.print(modules[y].getModuleVoltage());
             SERIALCONSOLE.print("V");
 
-            for (int i = 0; i < 6; i++)
+            // All cells of the module (was fixed at 6, so the console showed
+            // only cells 1-6 for BMW i3 / PHEV modules)
+            for (int i = 0; i < modules[y].getNumCells(); i++)
             {
                 SERIALCONSOLE.print("  Cell");
                 if (cellNum < 10) SERIALCONSOLE.print(" ");
@@ -616,10 +618,14 @@ int BMSModuleManager::getModuleCells(int addr)
         modules[addr].setNumCells(BMW_I3_CELLS_PER_MOD);
         return BMW_I3_CELLS_PER_MOD;
     }
-    // BMW PHEV: always 16 cells per module (SP44 populates only 0-7, rest zero)
+    // BMW PHEV: 16 cells per module by default (SP44 populates only 0-7, rest
+    // zero). A per-module override (e.g. 8 for SP44) is honoured - it was
+    // ignored in v7-beta7, so 8-cell modules always showed 8 zero cells.
     if (settings.cmuType == CMU_BMW_PHEV) {
-        modules[addr].setNumCells(BMW_PHEV_CELLS_PER_MOD);
-        return BMW_PHEV_CELLS_PER_MOD;
+        uint8_t ov = settings.moduleCells[addr];
+        int n = (ov >= 1 && ov <= BMW_PHEV_CELLS_PER_MOD) ? (int)ov : BMW_PHEV_CELLS_PER_MOD;
+        modules[addr].setNumCells(n);
+        return n;
     }
     uint8_t ov = settings.moduleCells[addr];
     int n = (ov >= 1 && ov <= 6) ? (int)ov
@@ -697,12 +703,12 @@ void BMSModuleManager::getAllVoltTempFromPHEV()
         if (!alive) continue;
 
         numFoundModules++;
-        modules[x].setNumCells(BMW_PHEV_CELLS_PER_MOD);
+        int n = getModuleCells(x);   // 16, or the per-module override
 
         float modV = 0.0f;
         for (int c = 0; c < BMW_PHEV_CELLS_PER_MOD; c++) {
             modules[x].setCellVoltage(c, d.cellV[c]);
-            if (d.cellV[c] > settings.IgnoreVolt && d.cellV[c] < 5.0f)
+            if (c < n && d.cellV[c] > settings.IgnoreVolt && d.cellV[c] < 5.0f)
                 modV += d.cellV[c];
         }
         modules[x].setModuleVoltage(modV);
@@ -710,6 +716,18 @@ void BMSModuleManager::getAllVoltTempFromPHEV()
         // 4 temperature sensors — store all 4; display uses T1/T2
         for (int t = 0; t < BMW_PHEV_TEMPS_PER_MOD; t++) {
             modules[x].setTemperature(t, d.temp[t]);
+        }
+
+        // Log the raw status when it changes (decoded from 0x100+module since
+        // the PHEV fix; v7-beta7 never received it). The console's Tesla
+        // fault text ("OV cells") does not apply to PHEV error words.
+        static uint32_t lastErr[BMW_PHEV_MAX_MODS + 1];
+        static uint16_t lastBal[BMW_PHEV_MAX_MODS + 1];
+        if (d.error != lastErr[x] || d.balstat != lastBal[x]) {
+            Logger::info("PHEV module %d: error word 0x%08lX  balstat 0x%04X",
+                         x, (unsigned long)d.error, d.balstat);
+            lastErr[x] = d.error;
+            lastBal[x] = d.balstat;
         }
 
         // Map 32-bit error word to 8-bit faults field (non-zero = fault)

@@ -2,6 +2,25 @@
 
 ---
 
+## v7-beta8 — October 2026 (unreleased)
+
+### Bug Fixes
+- **BMW PHEV cells 7–16 showed 0.000 V** — `BMSModule::setNumCells()` rejected anything above 12, so PHEV modules stayed at the default 6 cells and `getCellVoltage()` returned 0 for cells 7–16 on the display and web UI. Those cells were also left out of the module/pack low/high/average cell calculations (0x35A alarms, 0x373 min/max). The limit is now 16, the size of `cellVolt[]`.
+- **BMW PHEV temperatures T3/T4 dropped** — `BMSModule` stored only two temperatures; it now stores four. Display, averages and pack low/high still use T1/T2 only.
+- **BMW PHEV poll checksum wrong** — `getPhevChecksum()` left the rolling counter (`buf[6]`) out of the CRC, so every steady-state poll had a wrong CRC (the same bug v7-beta6 fixed for i3 Bus). It now covers `buf[0..6]`, as Tom de Bree's BMWPhevBMS does.
+- **BMW PHEV module IDs wiped at every boot** — starting CAN in PHEV mode cleared every module's ID and never re-assigned it, so modules stopped answering polls. Boot no longer touches IDs; see `PHEVASSIGN=1` below.
+- **BMW PHEV status frames** decoded from 0x100–0x10B (was 0x0A0, which modules never send); error word / balance status are logged when they change.
+- **BMW PHEV rolling counter** runs 0–14 like the reference (was 0–15).
+- **BMW PHEV presence** — a module appears once cells 1–9 arrive (was: all six sub-frames, so 8-cell modules might never appear); temperature frames no longer mark a module present. The per-module cell override (8/16) is now honoured in PHEV mode.
+- **BMW PHEV empty bus** — the 50 ms poll backs off when no module answers (as i3 Bus does), avoiding bus-off loops.
+- **Console pack details** (`d`) print every cell of the module (was always 6).
+
+### New Features
+- **`PHEVASSIGN=1`** — serial command that clears all BMW PHEV module IDs and assigns new ones to the modules that answer, as in BMWPhevBMS (find unassigned on 0x0A0, replies on 0x0F0, assign).
+- **Host unit test** for the PHEV protocol (`test/phev_protocol_test.cpp`), run in CI (`.github/workflows/test.yml`).
+
+---
+
 ## v7-beta7 — June 2026
 
 ### Bug Fixes

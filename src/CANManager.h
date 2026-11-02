@@ -15,6 +15,7 @@
 #include "freertos/task.h"
 #include "bms_config.h"   // for PHEV_MAX_MODS, BMW_PHEV_MAX_MODS
 #include "CRC8.h"         // for PHEV poll command CRC
+#include "PhevProtocol.h" // PHEV frame builders / decoders (pure functions)
 
 // ---------------------------------------------------------------------------
 // BMW i3 / Mini-E / Bus Pack staging data
@@ -34,7 +35,7 @@ struct I3SlaveData {
 struct PhevSlaveData {
     float    cellV[16];    // up to 16 cells per module (SP44 uses 8)
     float    temp[4];      // 4 temperature sensors per module
-    uint32_t error;        // 32-bit error/status word from 0x0X0 status frame
+    uint32_t error;        // 32-bit error/status word from 0x10X status frame
     uint16_t balstat;      // active balance bits from status frame
     bool     fresh;
     uint32_t lastSeenMs;
@@ -70,6 +71,10 @@ public:
 
     // BMW PHEV slave data
     bool getPhevSlaveData(int slot, PhevSlaveData &out);
+    // BMW PHEV: reset all CSC IDs and assign 0..n to every CSC that answers
+    // (console PHEVASSIGN=1). Runs in the PHEV task; progress is logged.
+    void startPhevIdAssignment();
+    bool isPhevAssigning() const { return phevAssignActive; }
 
 private:
     bool         running;
@@ -90,15 +95,14 @@ private:
 
     // BMW PHEV staging + accumulator
     // Index 0 unused; slots 1..PHEV_MAX_MODS map to module address (nextMod+1)
+    // Cells are written straight into phevdata as each sub-frame arrives;
+    // phevFramesRx only tracks presence (sub-frames 0-2, see PhevProtocol.h).
     PhevSlaveData phevdata[PHEV_MAX_MODS + 1];
-    struct PhevCellAcc {
-        float   cells[16];
-        uint8_t framesRx;   // bits 0..5 = sub-frames Id1..Id6; complete = 0x3F
-    } phevAcc[PHEV_MAX_MODS + 1];
+    uint8_t       phevFramesRx[PHEV_MAX_MODS + 1];   // bits 0..5 = sub-frames since last presence update
 
     // PHEV command sequencer state
     uint8_t  phevNextMod;    // 0..BMW_PHEV_MAX_MODS-1, cycles with each poll
-    uint8_t  phevMesCycle;   // 0x0..0xF rolling counter (upper nibble of buf[6])
+    uint8_t  phevMesCycle;   // 0x0..0xE rolling counter (upper nibble of buf[6]; never 0xF)
     uint8_t  phevTestCycle;  // 0..4, ramps up to enable voltage+temp measurement
     bool     phevBalCells;   // true = include balance target voltage in command
 
@@ -112,6 +116,23 @@ private:
     uint16_t bmwI3Bus_counter;   // cycle count: 0-3=init, 4+=steady state
     uint32_t i3BusLastReplySeenMs;  // millis() of the last real 0x100-0x1FF reply
     uint32_t i3BusTxStartMs;        // millis() when steady TX began (for backoff timing)
+
+    // PHEV empty-bus backoff (same scheme as BMWI3BUS)
+    uint32_t phevLastReplySeenMs;   // millis() of the last PHEV CSC frame
+    uint32_t phevTxStartMs;         // millis() when polling began
+
+    // PHEV ID assignment (BMWPhevBMS.ino:3031-3058, 3665-3760)
+    volatile bool phevAssignRequested;  // set by console, consumed by the PHEV task
+    bool     phevAssignActive;
+    volatile uint8_t phevUnassigned;    // 0xF0 replies since the last find-unassigned
+    uint8_t  phevDmc[8];                // DMC of the last unassigned CSC that answered
+    uint8_t  phevNextId;                // next ID to hand out
+    uint32_t phevAssignStepMs;          // last 500 ms assignment step
+    uint32_t phevAssignActivityMs;      // last reset / assignment
+    uint32_t phevUnassignedLogMs;       // rate limit for the "run PHEVASSIGN" hint
+    void phevAssignStep();
+    void sendPhevFindUnassigned();
+    void sendPhevAssignId(const uint8_t *dmc, uint8_t id);
 
     // PHEV TX
     void sendPhevCommand();
