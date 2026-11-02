@@ -2,6 +2,33 @@
 
 ---
 
+## v7-beta10 — testing (unreleased)
+
+Experimental CMU types for bench testing. Neither is confirmed on hardware yet.
+
+### New Features
+- **VW CMU (MEB / MQB) support — `CMUTYPE=5`** — protocol ported from Tom de Bree's VWBMSV2 (Tom-evnut/VW-bms @ 4a6a5b9). **Experimental — not yet confirmed on MEB hardware.**
+  - 0x0BA broadcast poll every 500 ms, with the same 3 s grace window + 1-in-N backoff as the i3 Bus keepalive so an empty bus does not go bus-off
+  - Cell voltages on standard IDs 0x1B0–0x1EE (module and sub-frame taken from the CAN ID), 12-bit packed, init/spoof-module guards
+  - Up to 16 modules; 8, 12 or 13 cells each, from the sub-frames a module actually sends (per-module override 8/12/13 wins). 13-cell module pages alternate 1–6 / 7–12 / 13
+  - Type 1 and type 2 (MEB) temperatures and MEB balance status on extended IDs; real pack min/max temperatures on 0x373
+  - Balancing via extended-ID commands for modules 1–12 with the reference duty cycle (~5 s measure / ~25 s bleed), gated on `BALVOLT` + `BALHYST`, auto-balance, inhibit and fault state; stop frames on every exit path
+  - Cells stay decoded while bleeding. Balance selection uses an un-bled snapshot from the measuring window (max 3 s old); the overvoltage value on 0x35A/0x373 adds a 0.05 V margin to bled readings, and a bleed stops early to re-measure near OVERV. Bleeding cells are left out of the 0x373 minimum
+  - Balance frames are sent from the CAN task, never blocking `loop()`
+  - VW frames never count as an "external device", so SimpBMS summary TX stays off on a module-only bus
+- **Host unit test** for the VW decoders (`test/vw_decode_test.cpp`), run in CI (`.github/workflows/test.yml`) against tables generated from the reference source
+- **Chrysler Pacifica PHEV BPCM — `CMUTYPE=6`** — read-only decode of the pack's own BMS, from Slyd's bench DBC for a 2023 pack (diyelectriccar.com thread 211649). **Experimental — not yet confirmed on hardware.**
+  - 6 modules × 16 cells on 0x487–0x49E, 2 temperatures per module on 0x4A0/0x4A1, coolant on 0x307, HVIL status on 0x150 (logged when it changes)
+  - Nothing is sent to the BPCM; it balances internally
+  - Wake: GPIO13 drives an external 12 V high-side switch to the BPCM wake pin. One 200 ms pulse after CAN starts and on the console `W` command, never repeated automatically (two pulses put the BPCM to sleep)
+- **Host unit test** for the Pacifica decoders (`test/pacifica_decode_test.cpp`), run in CI
+- VW and Pacifica use the v7-beta8 cell-based SoC and 0x351 limits, and publish pack voltage once per read
+
+### Bug Fixes
+- **SavvyCAN showed extended IDs as standard** — `wifiLogCAN()` always pushed frames to GVRET with the extended flag cleared. It now forwards the real frame format.
+
+---
+
 ## v7-beta9 — November 2026
 
 ### New Features

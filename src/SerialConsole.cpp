@@ -111,8 +111,9 @@ void SerialConsole::printMenu() {
     Logger::console("  LOGLEVEL=N       0=debug 1=info 2=warn 3=error 4=off [%d]",
                     settings.logLevel);
     Logger::console("\n--- v7: CMU Type & CAN Inhibit ---");
-    Logger::console("  CMUTYPE=0-4      0=Tesla UART, 1=BMW i3, 2=BMW i3 Bus,");
-    Logger::console("                   3=BMW Mini-E, 4=BMW PHEV [%d] (reboot)",
+    Logger::console("  CMUTYPE=0-6      0=Tesla UART, 1=BMW i3, 2=BMW i3 Bus,");
+    Logger::console("                   3=BMW Mini-E, 4=BMW PHEV,");
+    Logger::console("                   5=VW CMU (MEB/MQB), 6=Pacifica BPCM [%d] (reboot)",
                     settings.cmuType);
     Logger::console("  CANINHIBIT=0/1   CAN-based balance inhibit [%s]",
                     settings.canInhibitEnabled ? "ON" : "OFF");
@@ -158,6 +159,13 @@ void SerialConsole::handleShortCmd() {
         bms.sleepBoards();
         break;
     case 'W':
+        if (settings.cmuType == CMU_PACIFICA) {
+            // One pulse wakes, two pulses sleep (per Slyd): pressing W twice
+            // in quick succession may put the BPCM to sleep.
+            extern void pacificaWakePulse();
+            pacificaWakePulse();
+            break;
+        }
         Logger::console("Waking all boards");
         bms.wakeBoards();
         break;
@@ -376,7 +384,7 @@ void SerialConsole::handleConfigCmd() {
     }
     // --- v6: CMU type ---
     else if (cmdString == "CMUTYPE") {
-        if (newValue >= 0 && newValue <= 4) {
+        if (newValue >= 0 && newValue <= CMU_TYPE_MAX) {
             if (settings.cmuType != (uint8_t)newValue) {
                 settings.cmuType = (uint8_t)newValue;
                 needEEPROMWrite = true;
@@ -385,7 +393,9 @@ void SerialConsole::handleConfigCmd() {
                     "BMW i3 CAN",
                     "BMW i3 Bus Pack",
                     "BMW Mini-E",
-                    "BMW PHEV SP06/SP41"
+                    "BMW PHEV SP06/SP41",
+                    "VW CMU (MEB/MQB)",
+                    "Pacifica BPCM"
                 };
                 Logger::console("CMU type: %s  (Rebooting in 1s to apply...)", cmuNames[newValue]);
                 xTaskCreate([](void *param) {
@@ -395,7 +405,7 @@ void SerialConsole::handleConfigCmd() {
             } else {
                 Logger::console("CMU type already set to that value.");
             }
-        } else Logger::console("Invalid (0=Tesla, 1=BMW i3, 2=BMW i3 Bus, 3=BMW Mini-E, 4=BMW PHEV)");
+        } else Logger::console("Invalid (0=Tesla, 1=BMW i3, 2=BMW i3 Bus, 3=BMW Mini-E, 4=BMW PHEV, 5=VW CMU, 6=Pacifica BPCM)");
     }
     // --- BMW PHEV: reset and re-assign CSC IDs (not saved) ---
     else if (cmdString == "PHEVASSIGN") {

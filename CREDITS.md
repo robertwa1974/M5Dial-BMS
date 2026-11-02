@@ -23,6 +23,23 @@ ESP32-S3 port by **ronaegis**, used as the direct starting point for this projec
 BMW i3 CSC and BMW PHEV CAN protocol research by **Tom-evnut**:
 - https://github.com/Tom-evnut/TeslaBMSV2
 
+## VW CMU (MEB / MQB) CAN Protocol Reference
+
+VW battery module CMU protocol (cell voltages, temperatures, balance status,
+balance commands and the 0x0BA poll) ported from **Tom de Bree (Tom-evnut)**'s
+VWBMSV2, with his permission:
+- https://github.com/Tom-evnut/VW-bms (commit 4a6a5b9)
+
+The VW decoders in `src/VWProtocol.h` cite the reference file and line for
+every ported rule.
+
+## Chrysler Pacifica BPCM CAN Frame Map
+
+Pacifica PHEV BPCM frame map (cells, temperatures, coolant, HVIL status, wake
+and connector pinout) from the SavvyCAN DBC and bench notes posted by **Slyd**
+for a 2023 pack:
+- https://www.diyelectriccar.com/threads/tesla-motor-chrysler-pacifica-bpcm-in-smart-fortwo-ed.211649/
+
 ## BMW i3 BUS_variant CAN Protocol Reference
 
 BMW i3 CSC CAN protocol research by **hpeyerl**:

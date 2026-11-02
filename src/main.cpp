@@ -4,12 +4,16 @@
 // New in v7:
 //   - 5 CMU types: Tesla UART / BMW i3 / BMW i3 Bus Pack / BMW Mini-E / BMW PHEV
 //   - BMW PHEV SP06/SP41/SP44 support (polled 50ms, 16 cells, 4 temps)
+//   - VW CMU (MEB / MQB) support (0x0BA poll, 12/13 cells, ext-ID temps,
+//     balancing) - ported from Tom de Bree's VWBMSV2
+//   - Chrysler Pacifica PHEV BPCM (RX only, 6 x 16 cells, wake pulse on GPIO13)
 //   - GVRET/SavvyCAN TCP server on port 23
 //   - Web installer via GitHub Pages CI/CD
 //   - M5DialBMS branding, WiFi SSID M5DialBMS/M5DialBMS
 //
 // Hardware:
 //   CMU UART  : Grove A  - GPIO13(RX) / GPIO15(TX)  [Tesla mode only]
+//   BPCM wake : GPIO13 output in Pacifica mode -> external 12 V high-side switch
 //   CAN XCVR  : Grove B  - GPIO2(TX)  / GPIO1(RX)
 //   Drive inh : GPIO38   - HIGH = drive, inhibit balancing
 //   Encoder   : GPIO40(A) / GPIO41(B) / GPIO42(BTN)
@@ -129,6 +133,7 @@ static void pollEncoder()
 static uint32_t lastBmsRead     = 0;
 static uint32_t lastCANSend     = 0;
 static uint32_t lastEncoderPoll = 0;
+static uint32_t lastVwBalTick   = 0;
 static int      lastEncoderCount = 0;
 
 #define BMS_READ_INTERVAL_MS    1000
@@ -155,6 +160,8 @@ static const char *cmuTypeName()
         case CMU_BMW_I3_BUS: return "BMW i3 Bus";
         case CMU_BMW_MINIE:  return "BMW Mini-E";
         case CMU_BMW_PHEV:   return "BMW PHEV";
+        case CMU_VW:         return "VW CMU (MEB/MQB)";
+        case CMU_PACIFICA:   return "Pacifica BPCM";
         default:             return "Unknown";
     }
 }
@@ -172,6 +179,22 @@ void setCANEnabled(bool en)
 {
     if (en && !can.isRunning())  can.begin();
     if (!en && can.isRunning())  can.end();
+}
+
+// ---------------------------------------------------------------------------
+// Pacifica BPCM wake: one PAC_WAKE_PULSE_MS pulse on PIN_PAC_WAKE, which
+// drives an external high-side switch onto BPCM pin 9. Per Slyd, one pulse
+// wakes and two pulses sleep, so this is never repeated automatically: the
+// boot pulse plus the 'W' console command only. Pacifica mode only (the pin
+// is the Tesla UART RX otherwise).
+// ---------------------------------------------------------------------------
+void pacificaWakePulse()
+{
+    if (settings.cmuType != CMU_PACIFICA) return;
+    digitalWrite(PIN_PAC_WAKE, PAC_WAKE_ACTIVE);
+    delay(PAC_WAKE_PULSE_MS);
+    digitalWrite(PIN_PAC_WAKE, !PAC_WAKE_ACTIVE);
+    Logger::console("Pacifica: wake pulse sent (GPIO%d, %d ms)", PIN_PAC_WAKE, PAC_WAKE_PULSE_MS);
 }
 
 // ---------------------------------------------------------------------------
@@ -266,6 +289,20 @@ void setup()
         Logger::console("BMW PHEV CAN mode: skipping UART enumeration");
         display.showStartup("PHEV CAN mode...");
         // Module discovery via 0x080 polls — starts automatically once CAN begins
+    } else if (settings.cmuType == CMU_VW) {
+        Logger::console("VW CMU CAN mode: skipping UART enumeration");
+        display.showStartup("VW CAN mode...");
+        // Modules appear once CAN RX task sees their cell frames (0x0BA poll
+        // starts automatically once CAN begins)
+    } else if (settings.cmuType == CMU_PACIFICA) {
+        Logger::console("Pacifica BPCM CAN mode: skipping UART enumeration");
+        display.showStartup("Pacifica mode...");
+        // GPIO13 is the wake output here, not the UART RX: release the UART
+        // and park the pin inactive before the first pulse.
+        SERIALBMS.end();
+        pinMode(PIN_PAC_WAKE, OUTPUT);
+        digitalWrite(PIN_PAC_WAKE, !PAC_WAKE_ACTIVE);
+        // Pulse is sent after CAN starts (step 11) so the first frames are seen.
     } else {
         Logger::console("%s CAN mode: skipping UART enumeration", cmuTypeName());
         display.showStartup("BMW CAN mode...");
@@ -286,6 +323,7 @@ void setup()
     display.showStartup("Starting CAN...");
     if (can.begin()) {
         Logger::console("CAN ready on GPIO%d/GPIO%d (TX+RX)", PIN_CAN_TX, PIN_CAN_RX);
+        pacificaWakePulse();   // no-op unless cmuType == CMU_PACIFICA
     } else {
         Logger::console("CAN not available");
     }
@@ -332,6 +370,14 @@ void loop()
             case CMU_BMW_PHEV:
                 bms.getAllVoltTempFromPHEV();
                 break;
+            case CMU_VW:
+                bms.getAllVoltTempFromVW();
+                // Balancing: own 500 ms tick below (reference state machine)
+                break;
+            case CMU_PACIFICA:
+                bms.getAllVoltTempFromPacifica();
+                // No balance commands: the BPCM balances internally
+                break;
             default:  // CMU_BMW_I3, CMU_BMW_I3_BUS, CMU_BMW_MINIE
                 bms.getAllVoltTempFromCAN();
                 break;
@@ -348,6 +394,22 @@ void loop()
             }
         } else {
             faultAlertActive = false;
+        }
+    }
+
+    // VW CMU balancing - reference state machine ticks every 500 ms
+    // (VWBMSV2.ino:758-763). Only while auto-balance is on, not inhibited
+    // (GPIO / CAN charger) and not faulted. The permission is checked on
+    // every loop pass, so a fault, inhibit or auto-balance off stops an
+    // active bleed straight away (stopBalancingVW() is a no-op otherwise).
+    if (settings.cmuType == CMU_VW) {
+        bool vwBalAllowed = bms.getAutoBalance() && !bms.getBalanceInhibit()
+                         && !bms.isFaultedState();
+        if (!vwBalAllowed) {
+            bms.stopBalancingVW();
+        } else if (now - lastVwBalTick >= VW_BAL_TICK_MS) {
+            lastVwBalTick = now;
+            bms.balanceCells();
         }
     }
 
