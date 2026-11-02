@@ -25,13 +25,13 @@ Ported from: collin80/TeslaBMS · Tom-evnut/BMWPhevBMS · Tom-evnut/VW-bms · ro
 
 ## 1. Overview
 
-M5DialBMS is a battery management monitor and controller running on the M5Stack M5Dial (ESP32-S3). It supports six CMU types across two physical protocols (UART and CAN), and communicates over a 240×240 round display with a rotary encoder for navigation.
+M5DialBMS is a battery management monitor and controller running on the M5Stack M5Dial (ESP32-S3). It supports seven CMU types across two physical protocols (UART and CAN), and communicates over a 240×240 round display with a rotary encoder for navigation.
 
 | Feature | Detail |
 |---|---|
-| CMU types | 6 — Tesla UART, BMW i3 standard, BMW i3 Bus Pack, BMW Mini-E, BMW PHEV SP06/SP41, VW CMU (MEB/MQB) |
-| Max modules | 20 Tesla · 8 BMW i3/Mini-E/Bus Pack · 6 BMW PHEV · 16 VW CMU |
-| Cells per module | 4–6 Tesla · 12 BMW i3/Mini-E/Bus Pack · 16 BMW PHEV · 8–13 VW CMU |
+| CMU types | 7 — Tesla UART, BMW i3 standard, BMW i3 Bus Pack, BMW Mini-E, BMW PHEV SP06/SP41, VW CMU (MEB/MQB), Chrysler Pacifica BPCM |
+| Max modules | 20 Tesla · 8 BMW i3/Mini-E/Bus Pack · 6 BMW PHEV · 16 VW CMU · 6 Pacifica |
+| Cells per module | 4–6 Tesla · 12 BMW i3/Mini-E/Bus Pack · 16 BMW PHEV · 8–13 VW CMU · 16 Pacifica |
 | Display | 240×240 GC9A01 round, LVGL 8.x |
 | CAN | SimpBMS-compatible TX + RX (Grove B + transceiver) |
 | WiFi | Access Point mode — SSID `M5DialBMS`, dashboard at 192.168.4.1, SavvyCAN at port 23 |
@@ -168,7 +168,7 @@ The VW CMU logic connector is a black 12-way connector:
 
 ## 3. CMU Mode Selection
 
-v7 supports six CMU types. The mode is stored in flash and survives reboots. Change via the web dashboard Settings tab (`CMU Type` dropdown) or via the serial console command `CMUTYPE=n`. A reboot is required after changing CMU type.
+v7 supports seven CMU types. The mode is stored in flash and survives reboots. Change via the web dashboard Settings tab (`CMU Type` dropdown) or via the serial console command `CMUTYPE=n`. A reboot is required after changing CMU type.
 
 | CMUTYPE | Name | Protocol | Cells/Mod | Max Mods | Notes |
 |---|---|---|---|---|---|
@@ -178,6 +178,7 @@ v7 supports six CMU types. The mode is stored in flash and survives reboots. Cha
 | 3 | BMW Mini-E CSC | CAN 500kbps | 12 | 8 | Different voltage encoding |
 | 4 | BMW PHEV SP06/SP41 | CAN 500kbps | 16 | 6 | Polled protocol |
 | 5 | VW CMU (MEB/MQB) | CAN 500kbps | 8–13 | 16 | 0x0BA broadcast poll; experimental |
+| 6 | Chrysler Pacifica BPCM | CAN 500kbps | 16 | 6 | Pack's own BMS, read only; wake pulse on GPIO13; experimental |
 
 ### 3.1 Tesla UART Mode (CMUTYPE=0)
 
@@ -230,6 +231,27 @@ Ported from Tom de Bree's VWBMSV2 (https://github.com/Tom-evnut/VW-bms, commit 4
 - Cells stay decoded while modules bleed; balancing and overvoltage use un-bled
   readings (see 8.1b)
 - **Experimental:** not yet confirmed on MEB hardware — see the open questions in the README
+
+### 3.7 Chrysler Pacifica PHEV BPCM (CMUTYPE=6)
+
+The Pacifica pack has its own BMS (the BPCM). The Dial only listens to it: it sends nothing
+to the BPCM, and the BPCM balances its cells itself (reported, not yet verified). The frame
+map is from Slyd's bench DBC for a 2023 pack
+([diyelectriccar.com thread 211649](https://www.diyelectriccar.com/threads/tesla-motor-chrysler-pacifica-bpcm-in-smart-fortwo-ed.211649/)).
+
+- 6 modules × 16 cells (96S), 2 temperatures per module, coolant temperatures and HVIL status
+- **Wake:** the BPCM wakes on a 12 V pulse on its connector pin 9. **One pulse wakes, two
+  pulses put it to sleep.** GPIO13 (Grove A yellow, free in CAN modes) drives an
+  **external 12 V high-side switch** for this. Never connect GPIO13 to 12 V directly. The
+  Dial sends one 200 ms pulse after CAN starts, and another only when you type `W` on the
+  serial console. It never repeats the pulse by itself, so a missed wake cannot become a sleep
+- BPCM low-voltage connector (black, 12-pin, per Slyd): 1 = +12 V, 2 = GND, 3 = CAN-H,
+  4 = CAN-L, 5–6 = HVIL loop (jumper), 9 = wake
+- **Experimental:** not yet confirmed on hardware here. The map may differ on packs other
+  than 2023 (2017–2018 packs are a different part family). The pulse length and polarity, and
+  whether the BPCM stays awake without keep-alive frames, are unconfirmed
+- The BPCM sends about 44 CAN IDs. The undecoded ones count as an external device, so the
+  SimpBMS summary frames (0x351/0x355/0x356/0x35A/0x373) are sent onto the BPCM's bus
 
 ---
 
@@ -530,6 +552,15 @@ A dedicated FreeRTOS task on core 0 receives all frames. Received frames serve t
 Cells: 4 per sub-frame (sub-frame 3 = cell 13 only), 12-bit packed, mV = raw + 1000.
 Frames with 0xFF guard bytes (module initialising) are ignored.
 
+**Chrysler Pacifica BPCM (CMUTYPE=6)** — from Slyd's DBC (2023 pack); RX only
+
+| Frame ID | Content |
+|---|---|
+| 0x487–0x49E | Cells: ID = 0x487 + 4×(module−1) + sub-frame 0–3, 4 cells per frame, 16-bit big-endian, 1 mV/bit |
+| 0x4A0 / 0x4A1 | Module temperatures, modules 1–3 / 4–6, 2 per module, byte − 40 = °C |
+| 0x307 | Coolant outlet / inlet temperature |
+| 0x150 | HVIL status (logged when it changes) |
+
 ### 7.4 Balance Inhibit via CAN
 
 When CAN Balance Inhibit is enabled (`CANINHIBIT=1`), balancing pauses if no charger heartbeat is received for more than 5 seconds.
@@ -597,7 +628,7 @@ PlatformIO: `pio device monitor`
 |---|---|
 | `H` or `?` | Print help menu with current values |
 | `S` | Sleep all CMU boards (Tesla only) |
-| `W` | Wake all CMU boards (Tesla only) |
+| `W` | Wake all CMU boards (Tesla). In Pacifica mode: send one BPCM wake pulse (twice in a row puts it to sleep) |
 | `C` | Clear all faults on all boards |
 | `F` | Re-scan for connected boards |
 | `R` | Renumber boards from address 1 (Tesla only) |
@@ -629,7 +660,7 @@ All settings are saved to flash automatically after each valid command.
 | `SOCHI=4.20` | 2.00–4.50 V/cell | Cell voltage at 100% SoC |
 | `WIFI=1` | 0 or 1 | Enable WiFi on next boot |
 | `LOGLEVEL=1` | 0–4 | 0=Debug 1=Info 2=Warn 3=Error 4=Off |
-| `CMUTYPE=0` | 0–5 | 0=Tesla 1=BMW i3 2=BMW i3 Bus 3=BMW Mini-E 4=BMW PHEV 5=VW CMU (reboot required) |
+| `CMUTYPE=0` | 0–6 | 0=Tesla 1=BMW i3 2=BMW i3 Bus 3=BMW Mini-E 4=BMW PHEV 5=VW CMU 6=Pacifica BPCM (reboot required) |
 | `CANINHIBIT=1` | 0 or 1 | Enable CAN charger heartbeat balance inhibit |
 | `CHGID=0x305` | 0x001–0x7FF | CAN ID to watch for charger heartbeat |
 | `PHEVASSIGN=1` | 1 | BMW PHEV: clear all module IDs and assign new ones (not saved; see 4.3) |
@@ -730,6 +761,7 @@ All libraries are pinned to exact versions in `platformio.ini` and fetched from 
 | FastLED / TWAI watchdog reset | RMT peripheral conflict on CAN RX GPIO | Disable LED calls before TWAI init; confirmed fixed in v7 |
 | PHEV modules silent | Poll commands not reaching modules, or modules have no ID | Confirm `CMUTYPE=4`; check CAN wiring and module supply; PHEV modules are completely silent until polled. If 0x0F0 frames appear or v7-beta7 was ever used, run `PHEVASSIGN=1` (4.3) |
 | PHEV module shows 0 V on cells 9–16 | 8-cell modules (SP44) | Set the module's cell override to 8 in the web Settings tab |
+| Pacifica modules not found | BPCM asleep, or no frames on 0x487–0x49E | Check the wake switch wiring and 12 V supply; type `W` once (twice puts it to sleep); capture with SavvyCAN |
 | VW modules not found | No cell frames on 0x1B0–0x1EE | Confirm `CMUTYPE=5`; check CMU supply and CAN wiring; capture with SavvyCAN to see which IDs the modules use |
 | VW module shows 0 V cells 9–13 | Per-module override larger than the module sends | Set the module's cell override back to default (0) |
 
