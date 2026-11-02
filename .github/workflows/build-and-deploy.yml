@@ -52,8 +52,15 @@ jobs:
       # -----------------------------------------------------------------------
       # 4. Build firmware
       # -----------------------------------------------------------------------
+      # FW_VERSION is shown on the console, display and web page (tools/fw_version.py)
       - name: Build firmware
-        run: pio run -e m5dial
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            export FW_VERSION="${GITHUB_REF_NAME}"
+          else
+            export FW_VERSION="${GITHUB_REF_NAME}@${GITHUB_SHA::7}"
+          fi
+          pio run -e m5dial
 
       # -----------------------------------------------------------------------
       # 5. Locate build artifacts
@@ -113,6 +120,8 @@ jobs:
         run: |
           mkdir -p deploy
           cp factory.bin deploy/
+          # Application image for web (OTA) updates from the dashboard
+          cp ${{ env.BUILD_DIR }}/firmware.bin deploy/
           cp docs/index.html deploy/
           cp docs/manifest.json deploy/
 

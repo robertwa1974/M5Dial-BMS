@@ -30,6 +30,8 @@
 #include "CANManager.h"
 #include "WiFiManager.h"
 #include "SocCalc.h"
+#include "FwVersion.h"
+#include <esp_ota_ops.h>
 
 HardwareSerial SERIALBMS(1);
 
@@ -41,6 +43,38 @@ CANManager       can;
 WiFiManager      wifi;
 
 String wifiDisplayIP = "";
+
+// ---------------------------------------------------------------------------
+// Web update rollback. The bootloader has app rollback enabled: an image
+// written by a web update boots in "pending verify" state, and if the app
+// resets before marking itself valid, the bootloader goes back to the
+// previous image. The Arduino core marks every image valid at start-up
+// unless this returns true; it is confirmed in loop() instead, after
+// OTA_CONFIRM_MS of normal running (a crash or watchdog reset before then
+// rolls back). Images flashed over USB are not affected.
+// ---------------------------------------------------------------------------
+#define OTA_CONFIRM_MS  30000
+extern "C" bool verifyRollbackLater() { return true; }
+
+static bool otaPendingVerify()
+{
+    const esp_partition_t *run = esp_ota_get_running_partition();
+    esp_ota_img_states_t st;
+    return run && esp_ota_get_state_partition(run, &st) == ESP_OK
+           && st == ESP_OTA_IMG_PENDING_VERIFY;
+}
+
+static void otaConfirmCheck(uint32_t now)
+{
+    static bool done = false;
+    if (done || now < OTA_CONFIRM_MS) return;
+    done = true;
+    if (otaPendingVerify()) {
+        esp_ota_mark_app_valid_cancel_rollback();
+        Logger::console("OTA: firmware %s confirmed after %d s of normal running",
+                        FW_VERSION, OTA_CONFIRM_MS / 1000);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Encoder
@@ -218,7 +252,14 @@ void setup()
     Serial.begin(115200);
     uint32_t t0 = millis();
     while (!Serial && (millis() - t0) < 3000) delay(10);
-    Logger::console("M5DialBMS v7 booting...");
+    Logger::console("M5DialBMS %s booting...", FW_VERSION);
+    if (otaPendingVerify())
+        Logger::console("OTA: new firmware - confirmed after %d s; a reset before then goes back to the previous version",
+                        OTA_CONFIRM_MS / 1000);
+    {
+        const esp_partition_t *bad = esp_ota_get_last_invalid_partition();
+        if (bad) Logger::console("OTA: an earlier update in slot %s did not run normally and was rolled back", bad->label);
+    }
 
     // 7. CMU UART — always init; harmless in CAN-only modes
     SERIALBMS.begin(BMS_BAUD_RATE, SERIAL_8N1, BMS_SERIAL_RX_PIN, BMS_SERIAL_TX_PIN);
@@ -312,7 +353,8 @@ void loop()
     // Balance inhibit: GPIO + optional CAN charger heartbeat
     bool gpioInhibit = (digitalRead(PIN_DRIVE_INHIBIT) == BALANCE_INHIBIT_ACTIVE);
     bool canInhibit  = (settings.canInhibitEnabled && can.isRunning() && !can.getChargerActive());
-    bms.setBalanceInhibit(gpioInhibit || canInhibit);
+    // ...and no balancing while a web firmware update is being written
+    bms.setBalanceInhibit(gpioInhibit || canInhibit || wifiOtaActive());
 
     // BMS read — dispatch by CMU type
     if (now - lastBmsRead >= BMS_READ_INTERVAL_MS) {
@@ -406,6 +448,9 @@ void loop()
 
     // WiFi housekeeping
     if (wifi.isRunning()) wifi.loop();
+
+    // Confirm a web-updated image once it has run normally (rollback otherwise)
+    otaConfirmCheck(now);
 }
 
 // =============================================================================

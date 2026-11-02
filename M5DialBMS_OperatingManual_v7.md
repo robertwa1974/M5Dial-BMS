@@ -659,6 +659,7 @@ All settings are saved to flash automatically after each valid command.
 | `SOCLO=3.00` | 2.00–4.50 V/cell | Cell voltage at 0% SoC |
 | `SOCHI=4.20` | 2.00–4.50 V/cell | Cell voltage at 100% SoC |
 | `WIFI=1` | 0 or 1 | Enable WiFi on next boot |
+| `WIFIPASS=xxxxxxxx` | 8–31 chars | WiFi password, also used to authorise web firmware updates (serial only; see 11.1a) |
 | `LOGLEVEL=1` | 0–4 | 0=Debug 1=Info 2=Warn 3=Error 4=Off |
 | `CMUTYPE=0` | 0–6 | 0=Tesla 1=BMW i3 2=BMW i3 Bus 3=BMW Mini-E 4=BMW PHEV 5=VW CMU 6=Pacifica BPCM (reboot required) |
 | `CANINHIBIT=1` | 0 or 1 | Enable CAN charger heartbeat balance inhibit |
@@ -708,6 +709,22 @@ Flash directly from your browser — no tools, no file downloads required.
 > **Pack configuration** — all settings (CMU type, cell count, series/parallel, voltage thresholds, SoC calibration) are done via the web dashboard after flashing. No source code edits are required.
 
 > **Browser note:** Firefox and Safari do not support Web Serial. Use Chrome or Edge. If the installer page is unavailable, fall back to Option A(b) below.
+
+### 11.1a Option A(a) — Web Update from the Dashboard (keeps settings)
+
+Once a Dial runs a version with web update (the first time, install it with Option A or B), later versions can be installed over WiFi, without USB, and saved settings are kept.
+
+1. Download **`firmware.bin`** (not `factory.bin`): from the [web installer page](https://robertwa1974.github.io/M5Dial-BMS/), a test installer page, a release, or your own build (`.pio/build/m5dial/firmware.bin`).
+2. Turn WiFi on (long-press the encoder), join `M5DialBMS` and open `http://192.168.4.1`.
+3. **Settings** tab → **Firmware update**: the running version is shown. Choose `firmware.bin`, enter the WiFi password, and click **Upload & restart**.
+4. The file is checked before anything is written. `factory.bin`, a file for another chip, or a wrong password are refused and nothing changes. The upload takes about 30–60 s. The image is then verified and the Dial restarts (about 10 s).
+5. Reconnect to the WiFi if your phone or laptop dropped it. The page shows the new version. **Keep the Dial powered for 30 s**: the new firmware is confirmed only after it has run normally for 30 s.
+
+**Rollback.** If the new firmware crashes or resets during its first 30 s, the Dial goes back to the previous version by itself, and the console and web page report that the update was rolled back. A power cut during those 30 s also counts as a reset, so the update would then need to be repeated.
+
+**While updating** the BMS stops sending CAN frames during the restart, and balancing is paused during the upload. **Do not update while driving or charging.**
+
+**Password.** Web update uses the WiFi password. The default `M5DialBMS` is public, so change it on the serial console: `WIFIPASS=yourpassword` (8–31 characters, no spaces; it applies the next time WiFi starts). It can only be changed over USB, not from the web page.
 
 ### 11.1b Option A(b) — Manual Binary Flash (fallback)
 

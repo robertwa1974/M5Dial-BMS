@@ -5,6 +5,8 @@
 //   GET /api/data    -> JSON pack + module data (respects numCells)
 //   GET /api/can     -> JSON array of last 50 CAN frames (rolling buffer)
 //   GET /api/settings -> current settings JSON
+//   GET /api/fw      -> running firmware version, OTA slot and rollback state
+//   POST /api/ota    -> firmware.bin upload (header X-OTA-Password = WiFi password)
 // =============================================================================
 #include "WiFiManager.h"
 #include "CANManager.h"
@@ -17,6 +19,10 @@
 #include <ArduinoJson.h>
 #include <EEPROM.h>
 #include <driver/twai.h>
+#include <Update.h>
+#include <esp_ota_ops.h>
+#include "OtaCheck.h"
+#include "FwVersion.h"
 
 extern BMSModuleManager bms;
 extern EEPROMSettings   settings;
@@ -24,6 +30,98 @@ extern CANManager       can;
 extern WiFiManager      wifi;   // for gvretPushFrame in wifiLogCAN()
 
 static AsyncWebServer *server = nullptr;
+
+static const char *apPassword()
+{
+    return (strlen(settings.wifiPass) > 0) ? settings.wifiPass : WIFI_PASS_DEFAULT;
+}
+
+// ---------------------------------------------------------------------------
+// Web firmware update (OTA). The upload handler runs in the async TCP task.
+// The first OTA_HEADER_BYTES are buffered and checked (OtaCheck.h) before
+// anything is written, so a wrong file (factory.bin, other chip) never
+// touches the OTA slot. Update.end(true) verifies the image hash and makes
+// it the boot slot; the restart happens 1.5 s after the reply is sent.
+// The new image boots in "pending verify" state and is confirmed by main.cpp
+// after OTA_CONFIRM_MS of normal running; a reset before that rolls back.
+// ---------------------------------------------------------------------------
+static volatile bool otaActive = false;    // upload in progress (main loop pauses balancing)
+static bool     otaOk = false;             // header checked, Update running
+static String   otaError;
+static size_t   otaWritten = 0;
+static uint8_t  otaHead[OTA_HEADER_BYTES];
+static size_t   otaHeadLen = 0;
+static volatile uint32_t otaLastDataMs = 0;   // for the stalled-upload timeout
+#define OTA_STALL_MS  15000
+
+bool wifiOtaActive() { return otaActive; }
+
+static void otaFail(const String &msg)
+{
+    if (otaError.length() == 0) otaError = msg;
+    if (Update.isRunning()) Update.abort();
+    otaOk = false;
+    otaActive = false;
+    Logger::console("OTA: failed - %s", otaError.c_str());
+}
+
+static void otaUpload(AsyncWebServerRequest *req, const String &filename,
+                      size_t index, uint8_t *data, size_t len, bool final)
+{
+    if (index == 0) {
+        otaError = "";
+        otaOk = false;
+        otaWritten = 0;
+        otaHeadLen = 0;
+        if (Update.isRunning()) Update.abort();
+        AsyncWebHeader *h = req->getHeader("X-OTA-Password");
+        if (!h || h->value() != apPassword()) { otaFail("wrong password"); return; }
+        otaActive = true;
+        Logger::console("OTA: receiving %s", filename.c_str());
+    }
+    if (otaError.length()) return;
+    otaLastDataMs = millis();
+
+    // Buffer the start of the image until it can be checked
+    if (!otaOk) {
+        size_t take = OTA_HEADER_BYTES - otaHeadLen;
+        if (take > len) take = len;
+        memcpy(otaHead + otaHeadLen, data, take);
+        otaHeadLen += take;
+        data += take;
+        len  -= take;
+        if (otaHeadLen < OTA_HEADER_BYTES) {
+            if (final) otaFail(otaCheckMessage(OTA_CHECK_TOO_SHORT));
+            return;
+        }
+        OtaCheckResult r = otaCheckHeader(otaHead, otaHeadLen);
+        if (r != OTA_CHECK_OK) { otaFail(otaCheckMessage(r)); return; }
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) {
+            otaFail(String("cannot start update: ") + Update.errorString());
+            return;
+        }
+        otaOk = true;
+        if (Update.write(otaHead, otaHeadLen) != otaHeadLen) {
+            otaFail(String("write failed: ") + Update.errorString());
+            return;
+        }
+        otaWritten = otaHeadLen;
+    }
+    if (len > 0) {
+        if (Update.write(data, len) != len) {
+            otaFail(String("write failed: ") + Update.errorString());
+            return;
+        }
+        otaWritten += len;
+    }
+    if (final) {
+        if (!Update.end(true)) {
+            otaFail(String("image check failed: ") + Update.errorString());
+            return;
+        }
+        Logger::console("OTA: %u bytes written and verified - restarting", (unsigned)otaWritten);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // CAN frame rolling buffer - populated by CANManager::sendFrame()
@@ -177,6 +275,15 @@ h1{text-align:center;font-size:1.3rem;padding:1rem;color:var(--ok)}
 .toast{position:fixed;bottom:1.5rem;right:1.5rem;background:#1e293b;border:1px solid var(--border);padding:.6rem 1rem;border-radius:.5rem;font-size:.8rem;opacity:0;transition:opacity .3s;pointer-events:none}
 .toast.show{opacity:1}
 #status{text-align:center;font-size:.7rem;color:var(--sub);padding:.5rem}
+.fw{background:var(--card);border-radius:.5rem;padding:.8rem;margin-top:1.2rem}
+.fw h4{font-size:.75rem;color:var(--sub);text-transform:uppercase;letter-spacing:.05em;margin-bottom:.6rem}
+.fw .kv{font-size:.8rem;margin-bottom:.6rem;line-height:1.6}
+.fw .kv b{color:var(--text)}
+.fw input[type=file],.fw input[type=password]{background:#0f172a;border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;border-radius:.3rem;font-size:.8rem;max-width:100%}
+.fw .row{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:.5rem}
+.fw .note{font-size:.72rem;color:var(--warn);margin-bottom:.6rem;line-height:1.5}
+.prog{height:8px;background:var(--border);border-radius:4px;overflow:hidden;margin:.4rem 0}
+.prog div{height:100%;width:0;background:var(--ok);transition:width .2s}
 </style>
 </head>
 <body>
@@ -221,6 +328,21 @@ h1{text-align:center;font-size:1.3rem;padding:1rem;color:var(--ok)}
     <button class="btn btn-warn" onclick="fetchSettings()">&#8635; Reload</button>
   </div>
   <div id="settStatus" style="font-size:.75rem;color:var(--sub);margin-top:.5rem"></div>
+
+  <div class="fw">
+    <h4>Firmware update</h4>
+    <div class="kv" id="fwInfo">Loading...</div>
+    <div class="note">The BMS stops sending CAN data while it restarts (about 10 s).
+      Do not update while driving or charging. Upload <b>firmware.bin</b>, not factory.bin.
+      If the new firmware does not run normally for 30 s, the Dial goes back to this version.</div>
+    <div class="row">
+      <input type="file" id="fwFile" accept=".bin">
+      <input type="password" id="fwPass" placeholder="WiFi password" autocomplete="current-password">
+      <button class="btn btn-warn" id="fwBtn" onclick="uploadFw()">Upload &amp; restart</button>
+    </div>
+    <div class="prog"><div id="fwProg"></div></div>
+    <div id="fwStatus" style="font-size:.75rem;color:var(--sub)"></div>
+  </div>
 </div>
 
 <div id="status">Connecting...</div>
@@ -271,7 +393,7 @@ function switchTab(t){
     el.classList.toggle('active',['pack','can','settings'][i]===t));
   document.querySelectorAll('.panel').forEach(el=>
     el.classList.toggle('active',el.id===t));
-  if(t==='settings') fetchSettings();
+  if(t==='settings'){ fetchSettings(); fetchFw(); }
 }
 
 // ---- Pack tab ----
@@ -564,6 +686,66 @@ async function applySettings(){
   }catch(e){document.getElementById('settStatus').textContent='Network error: '+e.message;}
 }
 
+// ---- Firmware update ----
+let fwInfo=null;
+function fwStatus(msg,col){
+  const el=document.getElementById('fwStatus');
+  el.textContent=msg; el.style.color=col||'var(--sub)';
+}
+async function fetchFw(){
+  try{
+    const r=await fetch('/api/fw');
+    fwInfo=await r.json();
+    let h=`Running <b>${fwInfo.version}</b> (built ${fwInfo.built}, slot ${fwInfo.slot})`;
+    if(fwInfo.pending) h+='<br><span class="warn">New firmware: not yet confirmed (confirmed after 30 s of normal running)</span>';
+    if(fwInfo.rolledBack) h+=`<br><span class="err">An earlier update in slot ${fwInfo.rolledBack} did not run normally and was rolled back</span>`;
+    if(fwInfo.defaultPassword) h+='<br><span class="warn">WiFi password is still the default. Change it on the serial console: WIFIPASS=yourpassword</span>';
+    document.getElementById('fwInfo').innerHTML=h;
+    return fwInfo;
+  }catch(e){ return null; }
+}
+function uploadFw(){
+  const f=document.getElementById('fwFile').files[0];
+  const pw=document.getElementById('fwPass').value;
+  if(!f){ fwStatus('Choose firmware.bin first','var(--err)'); return; }
+  if(/factory/i.test(f.name)){ fwStatus('That is factory.bin (for the web installer). Upload firmware.bin.','var(--err)'); return; }
+  if(fwInfo && fwInfo.maxSize && f.size>fwInfo.maxSize){ fwStatus('File is larger than the firmware slot','var(--err)'); return; }
+  if(!pw){ fwStatus('Enter the WiFi password','var(--err)'); return; }
+  if(!confirm('Install '+f.name+' and restart the BMS?\n\nCAN output stops for about 10 s. Do not do this while driving or charging.')) return;
+  const from=fwInfo?fwInfo.version:'';
+  const fd=new FormData(); fd.append('firmware',f,f.name);
+  const x=new XMLHttpRequest();
+  x.open('POST','/api/ota');
+  x.setRequestHeader('X-OTA-Password',pw);
+  x.upload.onprogress=e=>{ if(e.lengthComputable){
+    document.getElementById('fwProg').style.width=(e.loaded*100/e.total)+'%';
+    fwStatus('Uploading... '+Math.round(e.loaded*100/e.total)+'%'); } };
+  x.onload=()=>{
+    let j={}; try{ j=JSON.parse(x.responseText); }catch(e){}
+    document.getElementById('fwBtn').disabled=false;
+    if(x.status===200 && j.ok){ fwStatus('Written and verified. Restarting...','var(--ok)'); waitForFw(from); }
+    else { document.getElementById('fwProg').style.width='0'; fwStatus('Update failed: '+(j.error||('HTTP '+x.status)),'var(--err)'); }
+  };
+  x.onerror=()=>{ document.getElementById('fwBtn').disabled=false; fwStatus('Upload failed (connection lost)','var(--err)'); };
+  document.getElementById('fwBtn').disabled=true;
+  x.send(fd);
+}
+async function waitForFw(from){
+  let down=false; const t0=Date.now();
+  while(Date.now()-t0<120000){
+    await new Promise(r=>setTimeout(r,1500));
+    const i=await fetchFw();
+    if(!i){ down=true; fwStatus('Restarting... (rejoin the M5DialBMS WiFi if your device dropped it)'); continue; }
+    if(down || i.version!==from){
+      fwStatus(i.version===from ? 'Back online, still running '+i.version+' (same version, or the update rolled back)'
+                                : 'Now running '+i.version+'. Keep the Dial powered for 30 s so it is confirmed.',
+               i.version===from?'var(--warn)':'var(--ok)');
+      return;
+    }
+  }
+  fwStatus('No answer after 2 minutes. Reconnect to the WiFi and reload this page.','var(--err)');
+}
+
 // ---- Poll ----
 fetchData();
 setInterval(fetchData,2000);
@@ -579,7 +761,7 @@ setInterval(fetchCAN,1000);
 bool WiFiManager::begin()
 {
     const char *ssid = (strlen(settings.wifiSSID) > 0) ? settings.wifiSSID : WIFI_SSID_DEFAULT;
-    const char *pass = (strlen(settings.wifiPass) > 0) ? settings.wifiPass : WIFI_PASS_DEFAULT;
+    const char *pass = apPassword();
 
     WiFi.mode(WIFI_AP);
     WiFi.softAP(ssid, pass);
@@ -835,6 +1017,50 @@ bool WiFiManager::begin()
         }
     );
 
+    // --- /api/fw: running firmware and OTA state ---
+    server->on("/api/fw", HTTP_GET, [](AsyncWebServerRequest *req) {
+        JsonDocument doc;
+        doc["version"] = FW_VERSION;
+        doc["built"]   = __DATE__ " " __TIME__;
+        const esp_partition_t *run = esp_ota_get_running_partition();
+        const esp_partition_t *nxt = esp_ota_get_next_update_partition(nullptr);
+        doc["slot"]    = run ? run->label : "?";
+        doc["maxSize"] = nxt ? (uint32_t)nxt->size : 0;
+        esp_ota_img_states_t st;
+        bool pending = run && esp_ota_get_state_partition(run, &st) == ESP_OK
+                       && st == ESP_OTA_IMG_PENDING_VERIFY;
+        doc["pending"] = pending;
+        const esp_partition_t *bad = esp_ota_get_last_invalid_partition();
+        doc["rolledBack"] = bad ? bad->label : "";
+        doc["defaultPassword"] = strcmp(apPassword(), WIFI_PASS_DEFAULT) == 0;
+        doc["busy"] = (bool)otaActive;
+        String out;
+        serializeJson(doc, out);
+        req->send(200, "application/json", out);
+    });
+
+    // --- /api/ota: firmware.bin upload ---
+    server->on("/api/ota", HTTP_POST,
+        [](AsyncWebServerRequest *req) {
+            JsonDocument doc;
+            bool ok = otaError.length() == 0 && Update.isFinished();
+            doc["ok"] = ok;
+            if (ok) doc["bytes"] = (uint32_t)otaWritten;
+            else    doc["error"] = otaError.length() ? otaError : String("upload incomplete");
+            String out;
+            serializeJson(doc, out);
+            req->send(ok ? 200 : 400, "application/json", out);
+            if (ok) {
+                xTaskCreate([](void *param) {
+                    vTaskDelay(pdMS_TO_TICKS(1500));
+                    ESP.restart();
+                }, "ota_restart", 2048, nullptr, 1, nullptr);
+            } else {
+                otaActive = false;
+            }
+        },
+        otaUpload);
+
     server->onNotFound([](AsyncWebServerRequest *req) {
         req->send(404, "text/plain", "Not found");
     });
@@ -869,6 +1095,11 @@ void WiFiManager::loop()
 {
     if (!running) return;
     gvretLoop();
+    // An upload the browser abandoned never reaches "final": abort it so the
+    // OTA slot is released and balancing resumes.
+    if (otaActive && !Update.isFinished() && millis() - otaLastDataMs > OTA_STALL_MS) {
+        otaFail("upload stalled");
+    }
 }
 
 // ---------------------------------------------------------------------------

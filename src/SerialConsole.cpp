@@ -8,6 +8,7 @@
 #include "BMSModuleManager.h"
 #include "CANManager.h"
 #include "SocCalc.h"
+#include "FwVersion.h"
 #include <EEPROM.h>
 
 template<class T> inline Print &operator<<(Print &obj, T arg) { obj.print(arg); return obj; }
@@ -45,7 +46,7 @@ void SerialConsole::loop() {
 // printMenu - shows all commands WITH their current values
 // ---------------------------------------------------------------------------
 void SerialConsole::printMenu() {
-    Logger::console("\n========== M5DialBMS v7 - MENU ==========");
+    Logger::console("\n========== M5DialBMS %s - MENU ==========", FW_VERSION);
     Logger::console("Line ending required (LF, CR, or CRLF)\n");
 
     Logger::console("--- Pack Actions ---");
@@ -101,6 +102,9 @@ void SerialConsole::printMenu() {
     Logger::console("--- Connectivity ---");
     Logger::console("  WIFI=0/1         WiFi at boot [%s]",
                     settings.wifiEnabled ? "ON" : "OFF");
+    Logger::console("  WIFIPASS=xxxx    WiFi and firmware-update password, 8-31 chars [%s]",
+                    (strlen(settings.wifiPass) == 0 || strcmp(settings.wifiPass, WIFI_PASS_DEFAULT) == 0)
+                        ? "default - please change" : "custom");
     Logger::console("  CAN=0/1          CAN TX/RX [running=use X to stop]");
     Logger::console("  BATTERYID=N      CAN battery ID [%d]",
                     settings.batteryID);
@@ -339,6 +343,22 @@ void SerialConsole::handleConfigCmd() {
         settings.wifiEnabled = (newValue != 0) ? 1 : 0;
         needEEPROMWrite = true;
         Logger::console("WiFi at boot: %s (reboot to apply)", settings.wifiEnabled ? "ON" : "OFF");
+    }
+    else if (cmdString == "WIFIPASS") {
+        // Serial only (not settable from the web page): this password also
+        // authorises web firmware updates. WPA2 needs 8-63 chars; the
+        // settings field holds 31.
+        String pw = String((char *)(cmdBuffer + i));
+        pw.trim();
+        bool okChars = true;
+        for (unsigned k = 0; k < pw.length(); k++)
+            if (pw[k] < 0x21 || pw[k] > 0x7E) okChars = false;
+        if (pw.length() >= 8 && pw.length() <= 31 && okChars) {
+            memset(settings.wifiPass, 0, sizeof(settings.wifiPass));
+            strncpy(settings.wifiPass, pw.c_str(), sizeof(settings.wifiPass) - 1);
+            needEEPROMWrite = true;
+            Logger::console("WiFi password changed (applies the next time WiFi starts)");
+        } else Logger::console("Invalid: 8-31 printable characters, no spaces");
     }
     else if (cmdString == "CAN") {
         extern void setCANEnabled(bool en);

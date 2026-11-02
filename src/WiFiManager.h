@@ -10,6 +10,9 @@
 // extd = true marks a 29-bit extended ID (forwarded to SavvyCAN/GVRET with bit 31 set)
 void wifiLogCAN(uint32_t id, uint8_t *data, uint8_t len, bool extd = false);
 
+// True while a web firmware upload is being written (main loop pauses balancing)
+bool wifiOtaActive();
+
 class WiFiManager {
 public:
     WiFiManager();

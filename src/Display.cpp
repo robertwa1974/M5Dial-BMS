@@ -13,6 +13,7 @@
 #include "BMSModuleManager.h"
 #include "CANManager.h"
 #include "Logger.h"
+#include "FwVersion.h"
 #include <M5Unified.h>
 #include <lvgl.h>
 
@@ -665,7 +666,7 @@ void Display::updateSettingsPage()
         "Tesla UART", "BMW i3 CAN", "BMW i3 Bus", "BMW Mini-E", "BMW PHEV", "VW CMU", "Pacifica"
     };
     snprintf(buf, sizeof(buf),
-        "M5DialBMS v7\n"
+        "M5DialBMS %s\n"
         "CMU: %s\n"
         "Cells: %d  Ser: %d  Par: %d\n"
         "OV:%.2fV  UV:%.2fV\n"
@@ -674,6 +675,7 @@ void Display::updateSettingsPage()
         "ChgHB: 0x%03X  %s\n"
         "AutoBal: %s\n"
         "Mods: %d / %d max",
+        FW_VERSION,
         cmuNames[settings.cmuType <= CMU_TYPE_MAX ? settings.cmuType : 0],
         settings.numCells, settings.numSeries, settings.numParallel,
         settings.OverVSetpoint, settings.UnderVSetpoint,

@@ -47,8 +47,9 @@ jobs:
       - name: Install PlatformIO
         run: pip install platformio
 
+      # FW_VERSION is shown on the console, display and web page (tools/fw_version.py)
       - name: Build firmware
-        run: pio run -e m5dial
+        run: FW_VERSION="${GITHUB_REF_NAME}@${GITHUB_SHA::7}" pio run -e m5dial
 
       # Same artifacts and offsets as build-and-deploy.yml
       - name: Merge binaries into factory.bin
@@ -79,6 +80,8 @@ jobs:
           echo "SLUG=$SLUG" >> $GITHUB_ENV
           mkdir -p deploy
           cp factory.bin deploy/
+          # Application image for web (OTA) updates from the dashboard
+          cp .pio/build/m5dial/firmware.bin deploy/
           for f in index.html manifest.json; do
             sed -e "s|__BRANCH__|${GITHUB_REF_NAME}|g" \
                 -e "s|__SHORTSHA__|${SHORT}|g" \
