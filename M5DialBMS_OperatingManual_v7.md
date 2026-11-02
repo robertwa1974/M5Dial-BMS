@@ -284,7 +284,7 @@ LOGLEVEL=0
 Shown at boot. Short-press the encoder to return here from any page.
 
 - **Pack voltage** — large, white. Turns red if any module is faulted
-- **State of Charge %** — blue, linear interpolation between SoC Lo and SoC Hi voltage per module
+- **State of Charge %** — blue, linear interpolation of the average cell voltage between SoC Lo and SoC Hi (V per cell, see 6.5)
 - **Lowest / highest cell voltage** across all modules
 - **Cell delta (dV)** — highest minus lowest. Turns amber if delta > 50mV
 - **Average pack temperature**
@@ -350,9 +350,9 @@ All thresholds, CMU type selection, CAN inhibit mode, charger heartbeat ID, per-
 |---|---|
 | CMU Type | Selects module protocol (reboot required) |
 | Cells per module | Global default: 4–16 |
-| Modules in series | Used for SoC voltage calculation |
+| Modules in series | Used for the cell count before any module has been read (see 6.5) |
 | Modules in parallel | Used for pack voltage display |
-| SoC 0% / 100% V/module | Linear SoC interpolation endpoints |
+| SoC 0% / 100% V/cell | Linear SoC interpolation endpoints, per cell (default 3.00 / 4.20) |
 | OV limit | Overvoltage trip threshold per cell |
 | UV limit | Undervoltage trip threshold per cell |
 | Ignore cell below | Cells below this voltage are excluded from min/delta (use 2.5V for unpopulated inputs) |
@@ -365,6 +365,7 @@ All thresholds, CMU type selection, CAN inhibit mode, charger heartbeat ID, per-
 | Per-module cell count | Override global default for individual module slots (0 = inherit global) |
 
 ---
+
 
 ### 6.4 SavvyCAN / GVRET Integration
 
@@ -379,6 +380,22 @@ When WiFi is active, a GVRET-compatible TCP server runs on port 23. This allows 
 
 The GVRET server starts and stops automatically with WiFi. No separate toggle is needed. Only one SavvyCAN client can be connected at a time.
 
+### 6.5 State of Charge and Cell Count
+
+SoC is a linear estimate from voltage:
+
+```
+SoC % = ( pack voltage / cells in series  −  SoC 0% V ) / ( SoC 100% V − SoC 0% V ) × 100
+```
+
+**Cells in series** is counted from the modules present at each read, using each module's cell count (the per-module override, else *Cells per module*), divided by *Modules in parallel*. Packs that mix module sizes are handled exactly: 16 × 5S + 4 × 4S counts as 96 cells. The same count sets the pack voltage limits in the 0x351 frame. Before any module has been read, the count comes from *Modules in series* × the configured cells per module.
+
+For Tesla modules the cell count is not detected, so **set *Cells per module* and any per-module overrides to match your modules**, or SoC and 0x351 will be wrong. The serial menu (`h`) shows the cell count in use and the current SoC under SOCLO/SOCHI.
+
+A linear estimate reads high in the middle of the range (a Li-ion cell at rest at 3.78 V is nearer 55–60% than the 65% shown with 3.00/4.20). Narrow SOCLO/SOCHI to the range you actually use if needed.
+
+**Upgrading from v7-beta7 or earlier:** SoC 0%/100% used to be V per module. They are converted once at boot: the old defaults 18.0/25.2 become 3.00/4.20, and other values are divided by the average configured cells per module. The log shows `SoC calibration converted to V/cell`. Check the values after upgrading.
+
 ---
 
 ## 7. CAN Bus
@@ -389,7 +406,7 @@ Transmitted every 1 second at 500 kbps. Compatible with Victron, SMA, and other 
 
 | CAN ID | Content | Encoding |
 |---|---|---|
-| 0x351 | Charge voltage limit · charge current limit · discharge current limit · discharge voltage limit | 0.1V/A per bit, little-endian signed 16-bit |
+| 0x351 | Charge voltage limit (OV limit × cells in series) · charge current limit · discharge current limit · discharge voltage limit (UV limit × cells in series) | 0.1V/A per bit, little-endian signed 16-bit |
 | 0x355 | State of Charge % · State of Health (fixed 100%) | 1%/bit, little-endian |
 | 0x356 | Pack voltage · current (CAB300) · average temperature | 0.01V/bit · 0.1A/bit · 0.1°C/bit, signed |
 | 0x35A | Alarm and fault bitmask (OV, UV, OT flags) | Bitmask |
@@ -508,8 +525,8 @@ All settings are saved to flash automatically after each valid command.
 | `NUMCELLS=6` | 1–16 | Global default cells per module |
 | `NUMSERIES=8` | 1–62 | Modules in series |
 | `NUMPARALLEL=1` | 1–10 | Modules in parallel |
-| `SOCLO=18.0` | V/module | Voltage at 0% SoC |
-| `SOCHI=25.2` | V/module | Voltage at 100% SoC |
+| `SOCLO=3.00` | 2.00–4.50 V/cell | Cell voltage at 0% SoC |
+| `SOCHI=4.20` | 2.00–4.50 V/cell | Cell voltage at 100% SoC |
 | `WIFI=1` | 0 or 1 | Enable WiFi on next boot |
 | `LOGLEVEL=1` | 0–4 | 0=Debug 1=Info 2=Warn 3=Error 4=Off |
 | `CMUTYPE=0` | 0–4 | 0=Tesla 1=BMW i3 2=BMW i3 Bus 3=BMW Mini-E 4=BMW PHEV (reboot required) |

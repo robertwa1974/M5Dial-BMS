@@ -10,6 +10,7 @@
 #include "CANManager.h"
 #include "bms_config.h"
 #include "BMSModuleManager.h"
+#include "SocCalc.h"
 #include "Logger.h"
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
@@ -233,8 +234,8 @@ const FIELDS=[
   ['numCells',   'Cells per module',    'int',   1,  6, 1],
   ['numSeries',  'Modules in series',   'int',   1, 62, 1],
   ['numParallel','Modules in parallel', 'int',   1, 10, 1],
-  ['socLo_V',    'SoC 0% V/module',     'float', 10,30,0.1],
-  ['socHi_V',    'SoC 100% V/module',   'float', 10,30,0.1],
+  ['socLo_V',    'SoC 0% V/cell',       'float', 2.0,4.5,0.01],
+  ['socHi_V',    'SoC 100% V/cell',     'float', 2.0,4.5,0.01],
   ['__g','Cell Thresholds'],
   ['ovSetpoint', 'OV limit (V)',        'float', 3.0,5.0,0.01],
   ['uvSetpoint', 'UV limit (V)',        'float', 2.0,4.0,0.01],
@@ -601,12 +602,7 @@ bool WiFiManager::begin()
         float lowC   = bms.getLowCellVolt();
         float highC  = bms.getHighCellVolt();
         float avgT   = bms.getAvgTemperature();
-        int   ns     = settings.numSeries  > 0 ? settings.numSeries  : BMS_NUM_SERIES;
-        float lo     = settings.socLo > 0.0f   ? settings.socLo      : 18.0f;
-        float hi     = settings.socHi > lo     ? settings.socHi      : 25.2f;
-        float socPct = ((packV / (float)ns) - lo) * 100.0f / (hi - lo);
-        if (socPct > 100.0f) socPct = 100.0f;
-        if (socPct < 0.0f)   socPct = 0.0f;
+        float socPct = bms.getSoC();
 
         pack["voltage"]         = serialized(String(packV, 2));
         pack["soc"]             = (int)socPct;
@@ -615,6 +611,7 @@ bool WiFiManager::begin()
         pack["delta"]           = serialized(String(highC - lowC, 3));
         pack["temp"]            = serialized(String(avgT,  1));
         pack["modules"]         = bms.getNumModules();
+        pack["seriesCells"]     = bms.getSeriesCells();
         pack["faulted"]         = bms.isFaultedState();
         pack["balancing"]       = bms.getAutoBalance() && !bms.getBalanceInhibit();
         int defaultCells = 6;
@@ -767,8 +764,8 @@ bool WiFiManager::begin()
             if (!j["numCells"].isNull())    { int v=j["numCells"];    if(v>=1&&v<=6)   { settings.numCells=(uint8_t)v;      changed=true; } }
             if (!j["numSeries"].isNull())   { int v=j["numSeries"];   if(v>=1&&v<=62)  { settings.numSeries=(uint8_t)v;     changed=true; } }
             if (!j["numParallel"].isNull()) { int v=j["numParallel"]; if(v>=1&&v<=10)  { settings.numParallel=(uint8_t)v;   changed=true; } }
-            if (!j["socLo_V"].isNull())     { float v=j["socLo_V"];   if(v>=10&&v<30)  { settings.socLo=v;                  changed=true; } }
-            if (!j["socHi_V"].isNull())     { float v=j["socHi_V"];   if(v>10&&v<=30)  { settings.socHi=v;                  changed=true; } }
+            if (!j["socLo_V"].isNull())     { float v=j["socLo_V"];   if(v>=SOC_CELL_V_MIN&&v<SOC_CELL_V_MAX) { settings.socLo=v;                  changed=true; } }
+            if (!j["socHi_V"].isNull())     { float v=j["socHi_V"];   if(v>SOC_CELL_V_MIN&&v<=SOC_CELL_V_MAX) { settings.socHi=v;                  changed=true; } }
             // Thresholds
             if (!j["ovSetpoint"].isNull())  { float v=j["ovSetpoint"];  if(v>=3&&v<=5)    { settings.OverVSetpoint=v;   changed=true; } }
             if (!j["uvSetpoint"].isNull())  { float v=j["uvSetpoint"];  if(v>=2&&v<=4)    { settings.UnderVSetpoint=v;  changed=true; } }

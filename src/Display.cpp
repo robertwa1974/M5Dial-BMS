@@ -493,13 +493,7 @@ void Display::updatePackPage()
     bool  fault  = bms.isFaultedState();
     int   nMods  = bms.getNumModules();
 
-    int   ns     = settings.numSeries > 0 ? settings.numSeries : BMS_NUM_SERIES;
-    float vPerMod = (ns > 0) ? (packV / (float)ns) : packV;
-    float socRange = settings.socHi - settings.socLo;
-    float socPct   = (socRange > 0.01f)
-        ? (vPerMod - settings.socLo) / socRange * 100.0f : 0.0f;
-    if (socPct > 100.0f) socPct = 100.0f;
-    if (socPct < 0.0f)   socPct = 0.0f;
+    float socPct = bms.getSoC();
 
     char buf[48];
 

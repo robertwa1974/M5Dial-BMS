@@ -264,8 +264,8 @@ extern const uint8_t BMW_PHEV_FINAL_XOR[12];
 #define DEFAULT_IGNORE_TEMP      0
 #define DEFAULT_IGNORE_TEMP_THRESH  -70.0f
 #define DEFAULT_NUM_CELLS        6       // cells per module (4,5,6)
-#define DEFAULT_SOC_LO           18.0f   // V per module at 0% SoC
-#define DEFAULT_SOC_HI           25.2f   // V per module at 100% SoC
+#define DEFAULT_SOC_LO           3.0f    // V per cell at 0% SoC (was 18.0 V/module)
+#define DEFAULT_SOC_HI           4.2f    // V per cell at 100% SoC (was 25.2 V/module)
 
 typedef struct {
     uint8_t  version;
@@ -291,8 +291,8 @@ typedef struct {
     uint8_t  numCells;       // global default: active cells per module (4,5,6)
     uint8_t  numSeries;      // modules in series
     uint8_t  numParallel;    // modules in parallel
-    float    socLo;          // V per module at 0% SoC
-    float    socHi;          // V per module at 100% SoC
+    float    socLo;          // V per cell at 0% SoC (V per module up to v7-beta7,
+    float    socHi;          // V per cell at 100% SoC  converted in loadSettings)
     // Per-module cell count override.  0 = use numCells global default.
     // Index 1..MAX_MODULE_ADDR maps directly to module address.
     uint8_t  moduleCells[MAX_MODULE_ADDR + 1];

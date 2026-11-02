@@ -18,6 +18,7 @@
 #include "CANManager.h"
 #include "bms_config.h"
 #include "BMSModuleManager.h"
+#include "SocCalc.h"
 #include "Logger.h"
 #include "WiFiManager.h"
 
@@ -771,20 +772,16 @@ void CANManager::sendBatterySummary()
     float avgT    = bms.getAvgTemperature();
     bool  faulted = bms.isFaultedState();
 
-    float socRange = settings.socHi - settings.socLo;
-    float socPer   = (socRange > 0.01f)
-        ? ((packV / (float)(settings.numSeries > 0 ? settings.numSeries : BMS_NUM_SERIES)) - settings.socLo)
-          / socRange * 100.0f
-        : 0.0f;
-    if (socPer > 100.0f) socPer = 100.0f;
-    if (socPer < 0.0f)   socPer = 0.0f;
+    float socPer  = bms.getSoC();
 
     uint8_t data[8];
-    int ns = settings.numSeries > 0 ? settings.numSeries : BMS_NUM_SERIES;
+    // Cells in series, not modules: v7-beta7 sent OV/UV x modules in series
+    // here (84 V for a 20-module, 96-cell pack instead of 403 V).
+    int nCells = bms.getSeriesCells();
 
     // 0x351 - Charge/discharge voltage and current limits
-    int16_t cvh = (int16_t)(settings.OverVSetpoint  * ns * 10.0f);
-    int16_t cvl = (int16_t)(settings.UnderVSetpoint * ns * 10.0f);
+    int16_t cvh = (int16_t)packLimitDeciV(settings.OverVSetpoint,  nCells);
+    int16_t cvl = (int16_t)packLimitDeciV(settings.UnderVSetpoint, nCells);
     int16_t ccl = 500;    // 50.0A charge current limit
     int16_t dcl = 1000;   // 100.0A discharge current limit
     data[0]=cvh&0xFF; data[1]=(cvh>>8)&0xFF;

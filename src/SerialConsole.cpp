@@ -7,6 +7,7 @@
 #include "Logger.h"
 #include "BMSModuleManager.h"
 #include "CANManager.h"
+#include "SocCalc.h"
 #include <EEPROM.h>
 
 template<class T> inline Print &operator<<(Print &obj, T arg) { obj.print(arg); return obj; }
@@ -66,10 +67,12 @@ void SerialConsole::printMenu() {
                     settings.numSeries);
     Logger::console("  NUMPARALLEL=N    Modules in parallel [%d]",
                     settings.numParallel);
-    Logger::console("  SOCLO=N.NN       V/module at 0%% SoC [%.2f]",
+    Logger::console("  SOCLO=N.NN       V/cell at 0%% SoC [%.2f]",
                     settings.socLo);
-    Logger::console("  SOCHI=N.NN       V/module at 100%% SoC [%.2f]\n",
+    Logger::console("  SOCHI=N.NN       V/cell at 100%% SoC [%.2f]",
                     settings.socHi);
+    Logger::console("                   (%d cells in series, SoC %.0f%%)\n",
+                    bms.getSeriesCells(), bms.getSoC());
 
     Logger::console("--- Cell Thresholds ---");
     Logger::console("  VOLTLIMHI=N.NN   OV limit per cell [%.2fV]",
@@ -238,18 +241,18 @@ void SerialConsole::handleConfigCmd() {
         } else Logger::console("Invalid (1-10)");
     }
     else if (cmdString == "SOCLO") {
-        if (newFloat >= 10.0f && newFloat < settings.socHi) {
+        if (newFloat >= SOC_CELL_V_MIN && newFloat < settings.socHi) {
             settings.socLo = newFloat;
             needEEPROMWrite = true;
-            Logger::console("SoC 0%% calibration: %.2fV/module", newFloat);
-        } else Logger::console("Invalid (10.0 to SOCHI)");
+            Logger::console("SoC 0%% calibration: %.2fV/cell", newFloat);
+        } else Logger::console("Invalid (2.00 to SOCHI, V per cell)");
     }
     else if (cmdString == "SOCHI") {
-        if (newFloat > settings.socLo && newFloat <= 30.0f) {
+        if (newFloat > settings.socLo && newFloat <= SOC_CELL_V_MAX) {
             settings.socHi = newFloat;
             needEEPROMWrite = true;
-            Logger::console("SoC 100%% calibration: %.2fV/module", newFloat);
-        } else Logger::console("Invalid (SOCLO to 30.0)");
+            Logger::console("SoC 100%% calibration: %.2fV/cell", newFloat);
+        } else Logger::console("Invalid (SOCLO to 4.50, V per cell)");
     }
     // --- Cell thresholds ---
     else if (cmdString == "VOLTLIMHI") {

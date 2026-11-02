@@ -22,3 +22,9 @@ jobs:
 
       - name: Run BMW PHEV protocol test
         run: ./phev_protocol_test
+
+      - name: Build SoC calculation test
+        run: g++ -std=c++11 -Wall -Wextra -Isrc test/soc_calc_test.cpp -o soc_calc_test
+
+      - name: Run SoC calculation test
+        run: ./soc_calc_test
