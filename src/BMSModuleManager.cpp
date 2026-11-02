@@ -16,6 +16,7 @@
 #include "BMSUtil.h"
 #include "Logger.h"
 #include "CANManager.h"
+#include "SocCalc.h"
 #include <EEPROM.h>
 
 extern EEPROMSettings settings;
@@ -24,23 +25,6 @@ extern CANManager     can;
 // Global strings read by the display layer in the main .ino
 String bms_status;
 String bms_modules_text;
-
-// ---------------------------------------------------------------------------
-// SoC estimation - simple linear interpolation on pack voltage
-// Divides by BMS_NUM_SERIES to get per-module voltage, scales 18.0-25.2V range
-// ---------------------------------------------------------------------------
-static float getSoC(float packV)
-{
-    extern EEPROMSettings settings;
-    int   ns  = (settings.numSeries > 0)  ? settings.numSeries  : BMS_NUM_SERIES;
-    float lo  = (settings.socLo    > 0.0f) ? settings.socLo     : 18.0f;
-    float hi  = (settings.socHi    > lo)   ? settings.socHi     : 25.2f;
-    float v   = packV / (float)ns;
-    v = (v - lo) * 100.0f / (hi - lo);
-    if (v > 100.0f) v = 100.0f;
-    if (v < 0.0f)   v = 0.0f;
-    return v;
-}
 
 // ---------------------------------------------------------------------------
 // Constructor
@@ -58,6 +42,7 @@ BMSModuleManager::BMSModuleManager()
     LowCellVolt     = 5.0f;
     HighCellVolt    = 0.0f;
     packVolt        = 0.0f;
+    seriesCells     = 0;
     Pstring         = BMS_NUM_PARALLEL;
     batteryID       = 1;
     numFoundModules = 0;
@@ -328,6 +313,7 @@ void BMSModuleManager::getAllVoltTemp()
     // another task, and a module read over UART takes long enough that it
     // used to see a partly summed pack voltage.
     float sumV = 0.0f;
+    int   cells = 0;
     float lowCell  = 1000.0f;
     float highCell = -1000.0f;
 
@@ -346,7 +332,8 @@ void BMSModuleManager::getAllVoltTemp()
             if (low  < lowCell)  lowCell  = low;
             if (high > highCell) highCell = high;
 
-            sumV += modules[x].getModuleVoltage();
+            sumV  += modules[x].getModuleVoltage();
+            cells += getModuleCells(x);
 
             // Only record temperatures from sensors that are actually connected
             // Unpopulated thermistors read ~-89C; ignore anything below -70C
@@ -365,14 +352,15 @@ void BMSModuleManager::getAllVoltTemp()
 
     // Divide by parallel string count for true pack voltage
     int ps = (Pstring > 0) ? Pstring : 1;
-    packVolt = sumV / (float)ps;
+    packVolt    = sumV / (float)ps;
+    seriesCells = seriesCellsFrom(cells, ps);
     if (packVolt > highestPackVolt) highestPackVolt = packVolt;
     if (packVolt < lowestPackVolt)  lowestPackVolt  = packVolt;
 
     float delta = (highCell > -1000.0f && lowCell < 1000.0f) ? (highCell - lowCell) : 0.0f;
 
     // Update pack summary string for display
-    bms_status  = String("SoC: ") + (int)getSoC(packVolt) + " %\n\n";
+    bms_status  = String("SoC: ") + (int)getSoC() + " %\n\n";
     bms_status += String("Pack: ") + packVolt + "v\n";
     bms_status += String("Lo: ")   + lowCell  + "v  Hi: " + highCell + "v\n";
     bms_status += String("Δ: ")    + delta    + "v";
@@ -443,6 +431,36 @@ float BMSModuleManager::getPackVoltage()    { return packVolt;        }
 float BMSModuleManager::getLowVoltage()     { return lowestPackVolt;  }
 float BMSModuleManager::getHighVoltage()    { return highestPackVolt; }
 int   BMSModuleManager::getNumModules()     { return numFoundModules; }
+
+// ---------------------------------------------------------------------------
+// Cells in series. Counted from the modules present at the last read (so a
+// pack mixing 5S and 4S modules is counted exactly); before any module has
+// been read, from the configured modules: NUMSERIES x per-module cell count.
+// ---------------------------------------------------------------------------
+int BMSModuleManager::getSeriesCells()
+{
+    int n = seriesCells;
+    if (n > 0) return n;
+    int ns = (settings.numSeries > 0) ? settings.numSeries : BMS_NUM_SERIES;
+    int total = 0;
+    for (int x = 1; x <= ns && x <= MAX_MODULE_ADDR; x++) total += cellsFor(x);
+    return total;
+}
+
+// Average configured cells per module, used to migrate old V/module SoC settings
+float BMSModuleManager::getConfiguredCellsPerModule()
+{
+    int ns = (settings.numSeries > 0) ? settings.numSeries : BMS_NUM_SERIES;
+    int total = 0, mods = 0;
+    for (int x = 1; x <= ns && x <= MAX_MODULE_ADDR; x++) { total += cellsFor(x); mods++; }
+    return mods ? (float)total / (float)mods : 0.0f;
+}
+
+// SoC %: average series-cell voltage between SOCLO and SOCHI (V/cell)
+float BMSModuleManager::getSoC()
+{
+    return socPercent(packVolt, seriesCells, settings.socLo, settings.socHi);
+}
 bool  BMSModuleManager::isFaultedState()    { return isFaulted;       }
 
 BMSModule& BMSModuleManager::getModule(int addr)
@@ -613,12 +631,11 @@ bool BMSModuleManager::getAutoBalance()                { return autoBalance;    
 // falls back to the global settings.numCells default.
 // Also syncs the resolved count into the BMSModule object.
 // ---------------------------------------------------------------------------
-int BMSModuleManager::getModuleCells(int addr)
+int BMSModuleManager::cellsFor(int addr)
 {
     if (addr < 1 || addr > MAX_MODULE_ADDR) return 6;
     // BMW i3 / Mini-E variants: always 12 cells per module regardless of settings
     if (settings.cmuType == CMU_BMW_I3 || settings.cmuType == CMU_BMW_I3_BUS || settings.cmuType == CMU_BMW_MINIE) {
-        modules[addr].setNumCells(BMW_I3_CELLS_PER_MOD);
         return BMW_I3_CELLS_PER_MOD;
     }
     // BMW PHEV: 16 cells per module by default (SP44 populates only 0-7, rest
@@ -627,12 +644,18 @@ int BMSModuleManager::getModuleCells(int addr)
     if (settings.cmuType == CMU_BMW_PHEV) {
         uint8_t ov = settings.moduleCells[addr];
         int n = (ov >= 1 && ov <= BMW_PHEV_CELLS_PER_MOD) ? (int)ov : BMW_PHEV_CELLS_PER_MOD;
-        modules[addr].setNumCells(n);
         return n;
     }
     uint8_t ov = settings.moduleCells[addr];
     int n = (ov >= 1 && ov <= 6) ? (int)ov
           : ((settings.numCells >= 1 && settings.numCells <= 6) ? (int)settings.numCells : 6);
+    return n;
+}
+
+int BMSModuleManager::getModuleCells(int addr)
+{
+    if (addr < 1 || addr > MAX_MODULE_ADDR) return 6;
+    int n = cellsFor(addr);
     modules[addr].setNumCells(n);
     return n;
 }
@@ -646,6 +669,7 @@ void BMSModuleManager::getAllVoltTempFromCAN()
     // Local sums, published once at the end (see getAllVoltTemp).
     float sumV  = 0.0f;
     int   found = 0;
+    int   cells = 0;
 
     for (int x = 1; x <= BMW_I3_MAX_MODS; x++) {
         I3SlaveData d;
@@ -666,6 +690,7 @@ void BMSModuleManager::getAllVoltTempFromCAN()
 
         // Push cell voltages
         modules[x].setNumCells(BMW_I3_CELLS_PER_MOD);
+        cells += BMW_I3_CELLS_PER_MOD;
         float modV = 0.0f;
         for (int c = 0; c < BMW_I3_CELLS_PER_MOD; c++) {
             modules[x].setCellVoltage(c, d.cellV[c]);
@@ -682,6 +707,7 @@ void BMSModuleManager::getAllVoltTempFromCAN()
 
     int np = (settings.numParallel > 0) ? settings.numParallel : BMS_NUM_PARALLEL;
     packVolt        = (np > 1) ? sumV / np : sumV;
+    seriesCells     = seriesCellsFrom(cells, np);
     numFoundModules = found;
 }
 
@@ -696,6 +722,7 @@ void BMSModuleManager::getAllVoltTempFromPHEV()
     // Local sums, published once at the end (see getAllVoltTemp).
     float sumV  = 0.0f;
     int   found = 0;
+    int   cells = 0;
 
     for (int x = 1; x <= BMW_PHEV_MAX_MODS; x++) {
         PhevSlaveData d;
@@ -710,6 +737,7 @@ void BMSModuleManager::getAllVoltTempFromPHEV()
 
         found++;
         int n = getModuleCells(x);   // 16, or the per-module override
+        cells += n;
 
         float modV = 0.0f;
         for (int c = 0; c < BMW_PHEV_CELLS_PER_MOD; c++) {
@@ -746,5 +774,6 @@ void BMSModuleManager::getAllVoltTempFromPHEV()
 
     int np = (settings.numParallel > 0) ? settings.numParallel : BMS_NUM_PARALLEL;
     packVolt        = (np > 1) ? sumV / np : sumV;
+    seriesCells     = seriesCellsFrom(cells, np);
     numFoundModules = found;
 }

@@ -14,6 +14,9 @@
 - **BMW PHEV presence** — a module appears once cells 1–9 arrive (was: all six sub-frames, so 8-cell modules might never appear); temperature frames no longer mark a module present. The per-module cell override (8/16) is now honoured in PHEV mode.
 - **BMW PHEV empty bus** — the 50 ms poll backs off when no module answers (as i3 Bus does), avoiding bus-off loops.
 - **Console pack details** (`d`) print every cell of the module (was always 6).
+- **State of charge was wrong for any pack whose modules are not 6S** (and for mixed packs). SoC divided pack voltage by *modules* in series and compared it with V/module endpoints (18.0/25.2 = 6S). A 96-cell pack of 16 × 5S + 4 × 4S at 363 V showed 2%. SoC now uses the average cell voltage: pack voltage / cells in series, counted from each present module's cell count. SOCLO/SOCHI are now **V per cell** (default 3.00/4.20); saved values are converted once at boot, without resetting other settings. See Operating Manual 6.5.
+- **0x351 voltage limits were far too low** — OV/UV (per cell) were multiplied by *modules* in series: 84 V instead of 403 V for that 96-cell pack, and 6× too low for any 6S Tesla pack. They now use cells in series.
+- Host unit test for the SoC and limit calculation (`test/soc_calc_test.cpp`), run in CI.
 - **Web dashboard pack voltage jumped around** (by 100 V or more) while the display read steady. The web server reads the pack voltage from another task, and it could catch the value half-way through being summed, module by module. The sum is now built separately and published in one step, for Tesla, i3 and PHEV.
 - **Factory-default log level is Info** (was Debug). After a web-installer flash, the serial console was flooded with every CAN frame, which buried the menu. Saved settings are unchanged; `LOGLEVEL=0` still enables debug.
 - **Build** pins M5GFX 0.1.16 from its GitHub tag (the PlatformIO registry no longer serves it), so clean CI builds work again.

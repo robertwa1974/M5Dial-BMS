@@ -49,6 +49,10 @@ public:
     float getLowVoltage();
     float getHighVoltage();
     int   getNumModules();
+    // Cells in series (live count, else configured), SoC from per-cell SOCLO/SOCHI
+    int   getSeriesCells();
+    float getConfiguredCellsPerModule();
+    float getSoC();
     bool  isFaultedState();
     // Returns the active cell count for a specific module address.
     int   getModuleCells(int addr);
@@ -65,7 +69,9 @@ public:
     void printPackDetails();
 
 private:
+    int       cellsFor(int addr);   // getModuleCells() without touching the module
     float     packVolt;
+    int       seriesCells;      // cells in series at the last read, 0 = none
     int       Pstring;
     float     LowCellVolt;
     float     HighCellVolt;

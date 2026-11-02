@@ -25,6 +25,7 @@
 #include "Display.h"
 #include "CANManager.h"
 #include "WiFiManager.h"
+#include "SocCalc.h"
 
 HardwareSerial SERIALBMS(1);
 
@@ -392,6 +393,17 @@ void loadSettings()
                         settings.OverVSetpoint, settings.UnderVSetpoint,
                         cmuTypeName(),
                         settings.wifiEnabled, settings.canInhibitEnabled);
+        // SOCLO/SOCHI were V/module up to v7-beta7; they are now V/cell.
+        // Convert once in place (no EEPROM_VERSION bump, which would reset
+        // every setting).
+        float oldLo = settings.socLo, oldHi = settings.socHi;
+        if (socMigrateToPerCell(&settings.socLo, &settings.socHi,
+                                bms.getConfiguredCellsPerModule())) {
+            Logger::console("SoC calibration converted to V/cell: %.2f/%.2f V/module -> %.2f/%.2f V/cell",
+                            oldLo, oldHi, settings.socLo, settings.socHi);
+            EEPROM.put(EEPROM_PAGE, settings);
+            EEPROM.commit();
+        }
     }
 }
 
