@@ -14,6 +14,8 @@
 - **BMW PHEV presence** — a module appears once cells 1–9 arrive (was: all six sub-frames, so 8-cell modules might never appear); temperature frames no longer mark a module present. The per-module cell override (8/16) is now honoured in PHEV mode.
 - **BMW PHEV empty bus** — the 50 ms poll backs off when no module answers (as i3 Bus does), avoiding bus-off loops.
 - **Console pack details** (`d`) print every cell of the module (was always 6).
+- **Factory-default log level is Info** (was Debug). After a web-installer flash, the serial console was flooded with every CAN frame, which buried the menu. Saved settings are unchanged; `LOGLEVEL=0` still enables debug.
+- **Build** pins M5GFX 0.1.16 from its GitHub tag (the PlatformIO registry no longer serves it), so clean CI builds work again.
 
 ### New Features
 - **`PHEVASSIGN=1`** — serial command that clears all BMW PHEV module IDs and assigns new ones to the modules that answer, as in BMWPhevBMS (find unassigned on 0x0A0, replies on 0x0F0, assign).

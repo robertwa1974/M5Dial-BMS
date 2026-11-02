@@ -358,7 +358,7 @@ void loadSettings()
         settings.checksum         = 0;
         settings.canSpeed         = CAN_BAUD_RATE;
         settings.batteryID        = 1;
-        settings.logLevel         = Logger::Debug;
+        settings.logLevel         = Logger::Info;   // Debug floods serial with every CAN frame
         settings.OverVSetpoint    = DEFAULT_OVER_V;
         settings.UnderVSetpoint   = DEFAULT_UNDER_V;
         settings.OverTSetpoint    = DEFAULT_OVER_T;
